@@ -277,9 +277,15 @@ fn fallback_carry(jar_path: &Path, decomposed: &DecomposedMod, out_dir: &Path) -
         .clone()
         .unwrap_or_else(|| format!("{name} content, carried by auto-porter"));
 
-    // horizon-mod.toml (content-mod manifest, spec §0.6)
+    // horizon-mod.toml (content-mod manifest, spec §0.6). Metadata is
+    // third-party text: escape every field (real descriptions contain
+    // quotes/newlines — found by the ecosystem sweep).
     let manifest = format!(
-        "schema = 1\nid = \"{mod_id}\"\nversion = \"{version}\"\nname = \"{name}\"\ndescription = \"{description}\"\n"
+        "schema = 1\nid = \"{}\"\nversion = \"{}\"\nname = \"{}\"\ndescription = \"{}\"\n",
+        shared::util::toml_escape(mod_id),
+        shared::util::toml_escape(version),
+        shared::util::toml_escape(name),
+        shared::util::toml_escape(&description),
     );
 
     let mut carried = Vec::new();

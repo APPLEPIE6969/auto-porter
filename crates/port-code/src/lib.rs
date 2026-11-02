@@ -530,11 +530,13 @@ fn assemble_bundle(
 
     // mixins/<id>/horizon-mixin.toml
     let mut mixin_toml = String::new();
-    mixin_toml.push_str(&format!("id = \"{mod_id}\"\n"));
+    // mod_id comes from mod metadata (third-party text): escape it.
+    mixin_toml.push_str(&format!("id = \"{}\"\n", shared::util::toml_escape(mod_id)));
     for hook in hooks_used {
         mixin_toml.push_str(&format!(
             "\n[[injection]]\nhook = \"{}\"\nhook_version = {}\nkind = \"HEAD\"\n",
-            hook.name, hook.hook_version
+            shared::util::toml_escape(&hook.name),
+            hook.hook_version
         ));
     }
     zip.start_file(format!("mixins/{mod_id}/horizon-mixin.toml"), options)

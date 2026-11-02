@@ -4,7 +4,7 @@
 Modrinth works from the public API. CurseForge requires an API key
 (CURSEFORGE_API_KEY); without one the CurseForge source is skipped and the
 report says so."""
-import argparse, json, os, sys, urllib.request
+import argparse, json, os, sys, urllib.parse, urllib.request
 
 UA = {"User-Agent": "auto-porter/0.1 (ecosystem sweep)"}
 
@@ -27,15 +27,17 @@ def main():
 
     if "modrinth" in args.sources:
         try:
+            facets = json.dumps([["project_type:mod"], [f"versions:{args.game_version}"]])
             search = get_json(
-                f"https://api.modrinth.com/v2/search?limit={args.count}"
-                f'&facets=[["project_type:mod"],["versions:{args.game_version}"]]')
+                "https://api.modrinth.com/v2/search?"
+                + urllib.parse.urlencode({"limit": args.count, "facets": facets}))
             for hit in search.get("hits", []):
                 slug = hit["slug"]
                 try:
+                    gv = json.dumps([args.game_version])
                     versions = get_json(
-                        f"https://api.modrinth.com/v2/project/{slug}/version"
-                        f'?game_versions=["{args.game_version}"]')
+                        f"https://api.modrinth.com/v2/project/{slug}/version?"
+                        + urllib.parse.urlencode({"game_versions": gv}))
                     if not versions:
                         continue
                     files = versions[0].get("files", [])

@@ -73,6 +73,7 @@ enum Command {
     /// Verify an output directory: --static / --compile / --parity / --in-game
     Verify {
         /// Output dir containing <mod-id>.hmod / .hnmod / -report.json
+        /// (a sweep layout with many mods is verified group by group)
         path: PathBuf,
         #[arg(long)]
         r#static: bool,
@@ -82,6 +83,10 @@ enum Command {
         parity: bool,
         #[arg(long)]
         in_game: bool,
+        /// Verify every artifact group even when one fails (sweep mode);
+        /// the exit code still reports the failures
+        #[arg(long)]
+        continue_on_error: bool,
     },
     /// Decompose + classify only; writes decomposed.json and classified.json
     Analyze {
@@ -183,7 +188,8 @@ fn run(cli: Cli, cfg: PorterConfig) -> i32 {
             compile,
             parity,
             in_game,
-        } => match auto_porter_lib::verify_dir(
+            continue_on_error,
+        } => match auto_porter_lib::verify_output_dir(
             &path,
             &cfg,
             r#static,
@@ -191,25 +197,39 @@ fn run(cli: Cli, cfg: PorterConfig) -> i32 {
             parity,
             in_game,
             cli.verbose,
+            continue_on_error,
         ) {
-            Ok(v) => {
-                println!(
-                    "{}: static schema={} hooks={} deps={} parity={} in_game={} overall={}",
-                    v.mod_id,
-                    v.r#static.schema.as_str(),
-                    v.r#static.hooks.as_str(),
-                    v.r#static.deps.as_str(),
-                    v.parity.status.as_str(),
-                    v.in_game.status.as_str(),
-                    v.overall.as_str()
-                );
-                for issue in &v.r#static.issues {
-                    println!("  [{:?}] {}: {}", issue.severity, issue.code, issue.message);
+            Ok(outcome) => {
+                for v in &outcome.reports {
+                    println!(
+                        "{}: static schema={} hooks={} deps={} parity={} in_game={} overall={}",
+                        v.mod_id,
+                        v.r#static.schema.as_str(),
+                        v.r#static.hooks.as_str(),
+                        v.r#static.deps.as_str(),
+                        v.parity.status.as_str(),
+                        v.in_game.status.as_str(),
+                        v.overall.as_str()
+                    );
+                    for issue in &v.r#static.issues {
+                        println!("  [{:?}] {}: {}", issue.severity, issue.code, issue.message);
+                    }
+                    for note in &v.human_review_needed {
+                        println!("  review: {note}");
+                    }
                 }
-                for note in &v.human_review_needed {
-                    println!("  review: {note}");
+                for e in &outcome.hard_errors {
+                    eprintln!("error: {e}");
                 }
-                if v.overall == shared::report::Overall::Failed {
+                // A failed mod is a failed verification even in
+                // continue-on-error mode: the sweep completed, the exit code
+                // still says something did not verify.
+                if !outcome.hard_errors.is_empty()
+                    || outcome
+                        .reports
+                        .iter()
+                        .any(|v| v.overall == shared::report::Overall::Failed)
+                {
                     1
                 } else {
                     0

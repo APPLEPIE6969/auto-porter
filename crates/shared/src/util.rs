@@ -28,6 +28,31 @@ pub fn is_valid_mod_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+/// Escape a string for interpolation into a TOML basic string
+/// (`"..."`). Mod metadata (names, descriptions) is third-party text:
+/// unescaped quotes, backslashes and control characters produced invalid
+/// manifests on real jars (found by the ecosystem sweep on Architectury,
+/// whose description ends in a newline).
+pub fn toml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 || c == '\u{7F}' => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Write JSON pretty-printed with sorted keys (BTreeMap-backed where relevant)
 /// and a trailing newline, so analyze snapshots stay diff-stable.
 pub fn write_json_canonical<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
@@ -62,4 +87,39 @@ pub fn collect_files(dir: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     walk(dir, dir, &mut out)?;
     out.sort();
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_escape_keeps_plain_text() {
+        assert_eq!(toml_escape("hello world_42"), "hello world_42");
+        // non-ASCII is legal in a basic string and stays readable
+        assert_eq!(toml_escape("café ☕"), "café ☕");
+    }
+
+    #[test]
+    fn toml_escape_handles_quotes_backslashes_and_control_chars() {
+        assert_eq!(toml_escape("say \"hi\""), "say \\\"hi\\\"");
+        assert_eq!(toml_escape("a\\b"), "a\\\\b");
+        assert_eq!(toml_escape("line1\nline2"), "line1\\nline2");
+        assert_eq!(toml_escape("tab\there"), "tab\\there");
+        // the Architectury sweep case: trailing newline in the description
+        assert_eq!(
+            toml_escape("An intermediary api aimed to ease developing multiplatform mods.\n"),
+            "An intermediary api aimed to ease developing multiplatform mods.\\n"
+        );
+        // other C0 controls become \uXXXX
+        assert_eq!(toml_escape("\u{1}"), "\\u0001");
+        assert_eq!(toml_escape("\u{7F}"), "\\u007F");
+    }
+
+    #[test]
+    fn toml_escape_output_parses_back() {
+        let v: toml::Value =
+            toml::from_str(&format!("d = \"{}\"", toml_escape("q\"nl\nbs\\"))).unwrap();
+        assert_eq!(v["d"].as_str().unwrap(), "q\"nl\nbs\\");
+    }
 }

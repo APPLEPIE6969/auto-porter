@@ -3,7 +3,7 @@
 
 Jars are third-party works: they land in runner scratch space and are never
 committed or redistributed."""
-import argparse, json, os, sys, urllib.request
+import argparse, json, os, sys, urllib.parse, urllib.request
 
 API = "https://api.modrinth.com/v2"
 UA = {"User-Agent": "auto-porter/0.1 (fixture download)"}
@@ -21,14 +21,19 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
-    search = get(f"{API}/search?limit={args.count}"
-                 f'&facets=[["project_type:mod"],["versions:{args.game_version}"]]')
+    # facets JSON must be URL-encoded: a raw `["..."]` query is rejected
+    # with HTTP 400 (found running the first real sweep)
+    facets = json.dumps([["project_type:mod"], [f"versions:{args.game_version}"]])
+    search = get(f"{API}/search?"
+                 + urllib.parse.urlencode({"limit": args.count, "facets": facets}))
     hits = search.get("hits", [])
     ok, failed = 0, 0
     for hit in hits:
         slug = hit["slug"]
         try:
-            versions = get(f"{API}/project/{slug}/version?game_versions=[\"{args.game_version}\"]")
+            gv = json.dumps([args.game_version])
+            versions = get(f"{API}/project/{slug}/version?"
+                           + urllib.parse.urlencode({"game_versions": gv}))
             if not versions:
                 continue
             files = versions[0].get("files", [])

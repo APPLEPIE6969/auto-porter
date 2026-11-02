@@ -451,7 +451,8 @@ fn carry_modpack_overrides(
     (carried, missing)
 }
 
-/// `auto-porter verify` — three layers (spec §6).
+/// `auto-porter verify` — three layers (spec §6). Single-artifact-set form:
+/// scans `dir` for one `<mod-id>.hmod` / `.hnmod` / `-report.json` group.
 pub fn verify_dir(
     dir: &Path,
     cfg: &PorterConfig,
@@ -461,8 +462,6 @@ pub fn verify_dir(
     do_in_game: bool,
     verbose: bool,
 ) -> Result<VerificationReport, String> {
-    let catalog = HookCatalog::load_or_snapshot(None).ok();
-
     // find the artifacts in the dir
     let mut hmod_path = None;
     let mut hnmod_path = None;
@@ -489,6 +488,115 @@ pub fn verify_dir(
             mod_id = stem;
         }
     }
+    verify_group(
+        dir, &mod_id, hmod_path, hnmod_path, cfg, do_static, do_compile, do_parity, do_in_game,
+        verbose,
+    )
+}
+
+/// Outcome of a multi-mod `verify` run (spec §8.2 sweep form).
+pub struct VerifyOutcome {
+    /// One verification report per artifact group found in the directory.
+    pub reports: Vec<VerificationReport>,
+    /// Groups that could not be verified at all (only with
+    /// `continue_on_error`, which keeps the sweep moving).
+    pub hard_errors: Vec<String>,
+}
+
+/// `auto-porter verify <dir> --continue-on-error` — verify every artifact
+/// group in a flat output directory (the ecosystem-sweep layout: N mods each
+/// contributing `<id>.hmod` / `<id>.hnmod` / `<id>-report.json`). With
+/// `continue_on_error` a failing group is recorded and the sweep moves on;
+/// without it the first failure aborts.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_output_dir(
+    dir: &Path,
+    cfg: &PorterConfig,
+    do_static: bool,
+    do_compile: bool,
+    do_parity: bool,
+    do_in_game: bool,
+    verbose: bool,
+    continue_on_error: bool,
+) -> Result<VerifyOutcome, String> {
+    // group artifacts by their `<mod-id>` prefix
+    let mut groups: std::collections::BTreeMap<String, (Option<PathBuf>, Option<PathBuf>)> =
+        Default::default();
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let p = entry.path();
+        if !p.is_file() {
+            continue; // `-tests/` dirs and friends are not artifact groups
+        }
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned());
+        let stem = name.as_deref().and_then(|n| {
+            n.strip_suffix(".hmod")
+                .or_else(|| n.strip_suffix(".hnmod"))
+                .or_else(|| n.strip_suffix("-report.json"))
+                .map(|s| s.to_string())
+        });
+        if let Some(id) = stem {
+            let g = groups.entry(id).or_default();
+            match p.extension().and_then(|x| x.to_str()) {
+                Some("hmod") => g.0 = Some(p.clone()),
+                Some("hnmod") => g.1 = Some(p.clone()),
+                _ => {} // the -report.json side is read inside verify_group
+            }
+        }
+    }
+    if groups.is_empty() {
+        // legacy single-mod layout: keep the old dir-scan semantics
+        let r = verify_dir(
+            dir, cfg, do_static, do_compile, do_parity, do_in_game, verbose,
+        )?;
+        return Ok(VerifyOutcome {
+            reports: vec![r],
+            hard_errors: Vec::new(),
+        });
+    }
+    let mut reports = Vec::new();
+    let mut hard_errors = Vec::new();
+    for (id, (hmod, hnmod)) in groups {
+        match verify_group(
+            dir, &id, hmod, hnmod, cfg, do_static, do_compile, do_parity, do_in_game, verbose,
+        ) {
+            Ok(v) => reports.push(v),
+            Err(e) => {
+                let msg = format!("{id}: {e}");
+                if continue_on_error {
+                    hard_errors.push(msg);
+                } else {
+                    return Err(msg);
+                }
+            }
+        }
+    }
+    reports.sort_by(|a, b| a.mod_id.cmp(&b.mod_id));
+    hard_errors.sort();
+    Ok(VerifyOutcome {
+        reports,
+        hard_errors,
+    })
+}
+
+/// Verify one artifact group (all files share the `<mod-id>` prefix) inside
+/// `dir` and write `<mod-id>-verification.json` next to them.
+#[allow(clippy::too_many_arguments)]
+fn verify_group(
+    dir: &Path,
+    mod_id: &str,
+    hmod_path: Option<PathBuf>,
+    hnmod_path: Option<PathBuf>,
+    cfg: &PorterConfig,
+    do_static: bool,
+    do_compile: bool,
+    do_parity: bool,
+    do_in_game: bool,
+    verbose: bool,
+) -> Result<VerificationReport, String> {
+    let catalog = HookCatalog::load_or_snapshot(None).ok();
 
     // tier from the pipeline report when present
     let pipeline = std::fs::read_to_string(dir.join(format!("{mod_id}-report.json")))
@@ -620,7 +728,7 @@ pub fn verify_dir(
     }
 
     let verification = VerificationReport {
-        mod_id: mod_id.clone(),
+        mod_id: mod_id.to_string(),
         tier,
         r#static: StaticResult {
             schema: schema_status,
