@@ -86,7 +86,7 @@
           "name": "living_incoming_damage"
         },
         "id": "torchtools:event-livinghurtevent-onhurt",
-        "java_concept": "LivingHurtEvent / LivingDamageEvent / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE",
+        "java_concept": "LivingHurtEvent / LivingDamageEvent(/$Pre) / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE",
         "kind": "entity_hurt",
         "notes": [
           "hook `living_incoming_damage` is a proposed name (not yet confirmed against the pinned native-hooks.json)"

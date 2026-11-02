@@ -113,22 +113,36 @@ fn check_asset_references(entries: &std::collections::BTreeMap<String, Vec<u8>>,
             continue; // JSON parse reported elsewhere
         };
         collect_texture_refs(&json, &mut |reference| {
+            // Vanilla model semantics: an un-namespaced reference resolves to
+            // `minecraft:` — it is never relative to the mod's own namespace.
             let (ns, rel) = match reference.split_once(':') {
                 Some((ns, rel)) => (ns.to_string(), rel.to_string()),
-                None => (
-                    namespaces.iter().next().cloned().unwrap_or_default(),
-                    reference.to_string(),
-                ),
+                None => ("minecraft".to_string(), reference.to_string()),
             };
             if !namespaces.contains(&ns) {
                 return; // vanilla or another namespace: not our responsibility
             }
             let candidate = format!("assets/{ns}/textures/{rel}.png");
             if !entries.contains_key(&candidate) {
-                v.fail(
-                    "missing_texture",
-                    format!("{name}: referenced texture `{reference}` is missing ({candidate})"),
-                );
+                if ns == "minecraft" {
+                    // Vanilla-namespace refs resolve against the game's own
+                    // assets at runtime; a mod carries `minecraft:` textures
+                    // only to *replace* vanilla ones, so not carrying one is
+                    // expected (e.g. a model citing `block/cobweb`).
+                    v.warn(
+                        "vanilla_texture_not_carried",
+                        format!(
+                            "{name}: texture `{reference}` is not carried ({candidate}); resolves against vanilla assets"
+                        ),
+                    );
+                } else {
+                    v.fail(
+                        "missing_texture",
+                        format!(
+                            "{name}: referenced texture `{reference}` is missing ({candidate})"
+                        ),
+                    );
+                }
             }
         });
         collect_sound_refs(&json, &mut |reference| {
@@ -158,13 +172,21 @@ fn collect_texture_refs(json: &serde_json::Value, f: &mut dyn FnMut(&str)) {
                     if let Some(t) = val.as_object() {
                         for tv in t.values() {
                             if let Some(s) = tv.as_str() {
-                                f(s);
+                                // `#name` values reference a texture variable
+                                // defined by the parent model chain (vanilla
+                                // model semantics) — not a file path, so the
+                                // cross-check does not apply.
+                                if !s.starts_with('#') {
+                                    f(s);
+                                }
                             }
                         }
                     }
                 } else if k == "texture" {
                     if let Some(s) = val.as_str() {
-                        f(s);
+                        if !s.starts_with('#') {
+                            f(s);
+                        }
                     }
                 } else {
                     collect_texture_refs(val, f);

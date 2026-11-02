@@ -108,6 +108,29 @@ that a labeled runner is registered). `nightly-ecosystem.yml` runs the
 top-100 sweep nightly on hosted runners; its full-verify mode and the status
 issue comment are likewise gated on repo variables.
 
+## Real-mod testing
+
+`scripts/test_real_mods.sh` runs the pipeline end-to-end against two pinned
+Modrinth downloads (nothing third-party is committed — jars go to a temp dir):
+
+- **Waystones** (neoforge 1.21.1, 380 classes) — a Balm-wrapped event surface:
+  no `@SubscribeEvent` anywhere, so decompose follows the concrete
+  `balm/api/event/*` types through handler constant pools. Expect 32 features;
+  the Balm `LivingDamageEvent` / `LivingDeathEvent` / `UseBlockEvent` listeners
+  map to `living_incoming_damage` / `living_death` / `right_click_block`, the
+  login / server-lifecycle / screen events become honest Tier D GapReports.
+- **Corail Tombstone** (neoforge 1.21.1, 590 classes) — direct API, 112
+  features: NeoForge 1.21.1's phase-split `LivingDamageEvent$Pre` maps, and
+  `PlayerInteractEvent$LeftClickBlock` resolves `left_click_block` with no
+  template → the spec §10 LLM fallback. Without `OPENROUTER_API_KEY` set the
+  script asserts the honest `llm_unavailable` report; with a key, generation
+  runs for real.
+
+The static verify on both bundles is `PASS_WITH_WARNINGS` (only the pinned-
+revision placeholder warnings). The script also guards vanilla-model texture
+semantics: `#var` references and `minecraft:`-namespace textures resolve at
+runtime, so they must not fail the cross-check.
+
 ## Configuration
 
 `porter.toml` (spec §11) pins the Horizon revision, `NATIVE_HOOKS_API`, tool

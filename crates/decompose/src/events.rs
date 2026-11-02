@@ -5,6 +5,14 @@
 //! `PlayerBlockBreakEvents.Before.EVENT.register(...)` — Fabric has no
 //! `@SubscribeEvent`, so detection is interface-based plus the `EVENT` /
 //! `register` constant-pool signature.
+//!
+//! Both loaders: wrapper libraries such as Balm (`net.blay09.mods.balm`)
+//! route every event through their own hub, so mod classes carry no
+//! `@SubscribeEvent` and no Fabric `EVENT` field (e.g. Waystones). The
+//! concrete Balm event type (`balm/api/event/<Name>`) still shows up in the
+//! handler's constant pool — that mention is the listener signal, because
+//! only the library itself dispatches events; mod classes only name the
+//! ones they handle.
 
 use crate::classfile::RawClass;
 use shared::types::{EventListenerAst, Loader};
@@ -37,6 +45,16 @@ fn first_param_internal(descriptor: &str) -> Option<String> {
 fn is_fabric_event_interface(name: &str) -> bool {
     name.starts_with("net/fabricmc/fabric/api/event/")
         || (name.contains("Callback") && name.contains('/'))
+}
+
+const BALM_EVENT_PREFIX: &str = "net/blay09/mods/balm/api/event/";
+
+/// Concrete Balm event type — the marker interface `BalmEvent` and the
+/// registration hub `BalmEvents` are not events themselves.
+fn is_balm_event_type(name: &str) -> bool {
+    name.starts_with(BALM_EVENT_PREFIX)
+        && name != "net/blay09/mods/balm/api/event/BalmEvent"
+        && name != "net/blay09/mods/balm/api/event/BalmEvents"
 }
 
 pub fn extract_events(classes: &[RawClass], loader: Loader) -> Vec<EventListenerAst> {
@@ -126,6 +144,43 @@ pub fn extract_events(classes: &[RawClass], loader: Loader) -> Vec<EventListener
                         }
                     }
                 }
+            }
+        }
+
+        // Balm wrapper library (loader-independent package): a mod class that
+        // names a concrete `balm/api/event/<Type>` in its interfaces or
+        // constant pool handles that event. Handler method is the first real
+        // body when the class implements the marker; lambda-style registrars
+        // get `None` and are merged with their handler by the dedup below.
+        let mut balm_types: Vec<String> = Vec::new();
+        for iface in class
+            .interfaces
+            .iter()
+            .chain(class.constants.class_refs.iter())
+        {
+            if is_balm_event_type(iface) && !balm_types.contains(iface) {
+                balm_types.push(iface.clone());
+            }
+        }
+        if !balm_types.is_empty() {
+            let handler = class
+                .methods
+                .iter()
+                .find(|m| {
+                    m.has_code
+                        && m.name != "<init>"
+                        && m.name != "<clinit>"
+                        && !m.name.starts_with("lambda$")
+                })
+                .map(|m| m.name.clone());
+            for event_class in balm_types {
+                out.push(EventListenerAst {
+                    loader,
+                    event_class,
+                    handler_class: class.this_class.clone(),
+                    handler_method: handler.clone(),
+                    registration: "balm".to_string(),
+                });
             }
         }
     }

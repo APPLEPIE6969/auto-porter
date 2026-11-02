@@ -28,6 +28,17 @@ pub struct MappingRule {
 /// `UseBlockCallback`, which is also the Fabric block-place callback).
 pub const RULES: &[MappingRule] = &[
     MappingRule {
+        concept: "PlayerInteractEvent.LeftClickBlock | AttackBlockCallback (attack block)",
+        event_regex: "(LeftClickBlock|AttackBlockCallback)$",
+        hook: "left_click_block",
+        kind: FeatureKind::BlockBreak,
+        tier: Tier::B,
+        tier_unmapped: Tier::D,
+        // The catalog resolves the hook, but no template covers attack-block
+        // handling — this routes to the spec §10 LLM fallback.
+        template: "",
+    },
+    MappingRule {
         concept: "BlockEvent.BreakEvent | PlayerBlockBreakEvents.BEFORE",
         event_regex: "(BreakEvent|PlayerBlockBreakEvents\\$Before)$",
         hook: "destroy_block",
@@ -37,8 +48,8 @@ pub const RULES: &[MappingRule] = &[
         template: "block_break_hook.rs",
     },
     MappingRule {
-        concept: "PlayerInteractEvent.RightClickBlock | UseBlockCallback (right-click)",
-        event_regex: "(RightClickBlock)$",
+        concept: "PlayerInteractEvent.RightClickBlock | UseBlockCallback (right-click) | Balm UseBlockEvent",
+        event_regex: "(RightClickBlock|UseBlockEvent|UseBlockCallback)$",
         hook: "right_click_block",
         kind: FeatureKind::ItemUse,
         tier: Tier::B,
@@ -64,8 +75,12 @@ pub const RULES: &[MappingRule] = &[
         template: "block_place_hook.rs",
     },
     MappingRule {
-        concept: "LivingHurtEvent / LivingDamageEvent / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE",
-        event_regex: "(LivingHurtEvent|LivingDamageEvent|LivingIncomingDamageEvent|ServerLivingEntityEvents\\$AllowDamage)$",
+        // NeoForge 1.21.1 splits the modifyable incoming-damage phase into
+        // `LivingDamageEvent$Pre`; Balm and older NeoForge keep the plain
+        // `LivingDamageEvent` name — both must map. `$Post` is the
+        // after-damage notification and stays unmapped (no catalog hook).
+        concept: "LivingHurtEvent / LivingDamageEvent(/$Pre) / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE",
+        event_regex: "(LivingHurtEvent|LivingIncomingDamageEvent|LivingDamageEvent(\\$Pre)?|ServerLivingEntityEvents\\$AllowDamage)$",
         hook: "living_incoming_damage",
         kind: FeatureKind::EntityHurt,
         tier: Tier::B,

@@ -8,11 +8,12 @@ NATIVE_HOOKS_API at this catalog: **2** · hooks defined: **22**
 
 | Java concept | Horizon hook (resolve in native-hooks.json) | Contract | Tier |
 |---|---|---|---|
+| PlayerInteractEvent.LeftClickBlock | AttackBlockCallback (attack block) | `left_click_block` *(proposed)* | cancel | B |
 | BlockEvent.BreakEvent | PlayerBlockBreakEvents.BEFORE | `destroy_block` | cancel | B |
-| PlayerInteractEvent.RightClickBlock | UseBlockCallback (right-click) | `right_click_block` | replace | B |
+| PlayerInteractEvent.RightClickBlock | UseBlockCallback (right-click) | Balm UseBlockEvent | `right_click_block` | replace | B |
 | PlayerInteractEvent.RightClickItem | UseItemCallback | `right_click_item` *(proposed)* | replace | B |
 | BlockEvent.EntityPlaceEvent | UseBlockCallback (place check) | `place_block` | cancel | B |
-| LivingHurtEvent / LivingDamageEvent / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE | `living_incoming_damage` *(proposed)* | cancel | B |
+| LivingHurtEvent / LivingDamageEvent(/$Pre) / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE | `living_incoming_damage` *(proposed)* | cancel | B |
 | LivingDeathEvent | ServerLivingEntityEvents.AFTER_DEATH | `living_death` *(proposed)* | listen | B |
 | EntityJoinLevelEvent (was EntityJoinWorldEvent) | ServerEntityEvents.ENTITY_LOAD | `entity_join_level` *(proposed)* | listen | B |
 | PlayerInteractEvent.EntityInteract | UseEntityCallback | `entity_interact` *(proposed)* | cancel | B |
