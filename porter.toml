@@ -10,8 +10,8 @@ ctl_path        = "~/.horizon/horizon-ctl"
 port_pack_path  = "~/.cargo/bin/horizon-port-pack"
 
 [llm]
-provider     = "anthropic"                     # or "openai", "local"
-model        = "claude-sonnet-5-5"             # current Sonnet; swap for claude-opus-5-5 on hard features
+provider     = "openrouter"                    # or "anthropic", "openai", "local"
+model        = "thinkingmachines/inkling-small:free"   # OpenRouter model id; swap for claude-sonnet-5-5 etc.
 max_retries  = 3
 timeout_secs = 60
 temperature  = 0.1

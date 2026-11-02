@@ -2,7 +2,9 @@
 //!
 //! Provider-configurable; the model name comes from porter.toml, never from
 //! code. Missing credentials are `LlmUnavailable`, a real 60 s timeout is
-//! `LlmTimeout` — the two are deliberately distinct.
+//! `LlmTimeout` — the two are deliberately distinct. Providers: `anthropic`,
+//! `openai`, and `openrouter` (OpenAI-compatible; the key is read from
+//! `OPENROUTER_API_KEY`, model ids look like `vendor/model:variant`).
 
 use shared::config::PorterConfig;
 use shared::error::{ErrorType, Phase, PortError};
@@ -116,25 +118,45 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 }),
             )
         }
-        "openai" => {
-            let Some(key) = std::env::var("OPENAI_API_KEY")
-                .ok()
-                .filter(|k| !k.is_empty())
-            else {
+        "openai" | "openrouter" => {
+            let (env_var, base_url) = if cfg.llm.provider == "openrouter" {
+                (
+                    "OPENROUTER_API_KEY",
+                    "https://openrouter.ai/api/v1/chat/completions",
+                )
+            } else {
+                (
+                    "OPENAI_API_KEY",
+                    "https://api.openai.com/v1/chat/completions",
+                )
+            };
+            let Some(key) = std::env::var(env_var).ok().filter(|k| !k.is_empty()) else {
                 return LlmOutcome::Unavailable(
                     PortError::new(
                         Phase::PortCode,
                         ErrorType::LlmUnavailable,
-                        "OPENAI_API_KEY is not set; the LLM fallback cannot run",
+                        format!("{env_var} is not set; the LLM fallback cannot run"),
                     )
-                    .with_suggestion("export OPENAI_API_KEY or add a template for this pattern"),
+                    .with_suggestion(format!(
+                        "export {env_var} or add a template for this pattern"
+                    )),
                 );
             };
+            let mut headers = vec![("authorization".to_string(), format!("Bearer {key}"))];
+            if cfg.llm.provider == "openrouter" {
+                // OpenRouter attribution headers (recommended by their docs).
+                headers.push((
+                    "http-referer".to_string(),
+                    "https://github.com/APPLEPIE6969/auto-porter".to_string(),
+                ));
+                headers.push(("x-title".to_string(), "auto-porter".to_string()));
+            }
             (
-                "https://api.openai.com/v1/chat/completions".to_string(),
-                vec![("authorization".to_string(), format!("Bearer {key}"))],
+                base_url.to_string(),
+                headers,
                 serde_json::json!({
                     "model": cfg.llm.model,
+                    "max_tokens": 2048,
                     "temperature": cfg.llm.temperature,
                     "messages": [{"role": "user", "content": prompt}]
                 }),
@@ -170,14 +192,14 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                     Some(code) => LlmOutcome::Code(code),
                     None => LlmOutcome::Failed(PortError::new(
                         Phase::PortCode,
-                        ErrorType::LlmTimeout,
+                        ErrorType::LlmFailed,
                         "LLM returned an empty response",
                     )),
                 }
             }
             Err(e) => LlmOutcome::Failed(PortError::new(
                 Phase::PortCode,
-                ErrorType::LlmTimeout,
+                ErrorType::LlmFailed,
                 format!("cannot decode LLM response: {e}"),
             )),
         },
@@ -185,7 +207,7 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
             let body = resp.into_string().unwrap_or_default();
             LlmOutcome::Failed(PortError::new(
                 Phase::PortCode,
-                ErrorType::LlmTimeout,
+                ErrorType::LlmFailed,
                 format!(
                     "LLM returned an error status; body: {}",
                     truncate(&body, 400)
@@ -203,7 +225,7 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
             } else {
                 LlmOutcome::Failed(PortError::new(
                     Phase::PortCode,
-                    ErrorType::LlmTimeout,
+                    ErrorType::LlmFailed,
                     format!("LLM transport error: {msg}"),
                 ))
             }
@@ -223,7 +245,7 @@ fn extract_text(json: &serde_json::Value, provider: &str) -> Option<String> {
             .and_then(|b| b.get("text"))
             .and_then(|t| t.as_str())
             .map(|s| s.to_string()),
-        "openai" => json
+        "openai" | "openrouter" => json
             .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())

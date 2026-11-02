@@ -57,12 +57,26 @@ while the pinned revision is the all-zero placeholder.
 ## 4. LLM fallback
 
 Template-first generation needs no network. The fallback (spec §10) is wired
-for `anthropic` and `openai` providers with the §10 prompt, `porter.toml`
-timeout/retries, and **distinct** failure semantics:
+for `anthropic`, `openai`, and `openrouter` providers (OpenRouter is
+OpenAI-compatible: `OPENROUTER_API_KEY`, model ids like
+`thinkingmachines/inkling-small:free`, request goes to
+`https://openrouter.ai/api/v1/chat/completions` with the standard attribution
+headers), with the §10 prompt, `porter.toml` timeout/retries, and **distinct**
+failure semantics:
 
-- `LlmTimeout` — real call that timed out or errored,
+- `LlmTimeout` — a real call that timed out,
 - `LlmUnavailable` — **additive** `ErrorType` (not in the §9 sketch): no API
-  key configured or unknown provider. Reporting that as a timeout would lie.
+  key configured or unknown provider. Reporting that as a timeout would lie,
+- `LlmFailed` — **additive** `ErrorType`: the provider answered but rejected
+  the call (HTTP error status, e.g. an invalid key → 401 with the provider's
+  own body surfaced verbatim) or returned nothing usable.
+
+Retries follow §10: initial attempt plus `max_retries` (default 3), each
+surfaced as its own error entry in the report.
+
+The tier-B features whose mapping rule carries no template (currently the
+player-tick pre/post hooks) are the live LLM-fallback path; Tier C stays
+human-design and Tier D stays report-only regardless of the provider.
 
 ## 5. Parity & in-game layers
 

@@ -29,6 +29,15 @@ cargo run -p cli -- analyze tests/fixtures/jars/veinminer-fabric-1.0.0.jar --out
 cargo run -p cli -- port tests/fixtures/jars/veinminer-fabric-1.0.0.jar \
   --horizon-revision <FULL_40_HEX_SHA> --output ./output/ --verbose
 
+# Complex fixture: spans all four tiers, incl. the §10 LLM fallback
+# (player-tick listener -> player_tick_pre hook, no template) and a
+# deliberate Tier D gap (command registration). With porter.toml's default
+# provider = openrouter / model = thinkingmachines/inkling-small:free:
+OPENROUTER_API_KEY=sk-or-... cargo run -p cli -- \
+  port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar --output ./output/ --verbose
+# without a key the same run degrades honestly: llm_unavailable on the
+# tick feature, everything template-covered still ports
+
 # Data only (used by CI)
 cargo run -p cli -- port tests/fixtures/jars/moreassets-fabric-2.1.0.jar --data-only --output ./output/
 
@@ -80,7 +89,8 @@ What needs Horizon-side tooling (documented in
   possible for native mods),
 - parity + in-game layers (`horizon-ctl` + a licensed MC 26.3 copy on a
   self-hosted runner),
-- LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
+- LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY`;
+  default provider `openrouter` with model `thinkingmachines/inkling-small:free`).
 
 ## CI
 

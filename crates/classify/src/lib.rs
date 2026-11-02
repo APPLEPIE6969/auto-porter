@@ -45,7 +45,13 @@ pub fn classify(decomposed: &DecomposedMod, catalog: &HookCatalog) -> ClassifyOu
                     Some(r.hook.to_string()),
                     r.tier,
                     r.tier_unmapped,
-                    Some(r.template.to_string()),
+                    // An empty template means "no template covers this
+                    // pattern" — Phase 4 falls back to the LLM (spec §10).
+                    if r.template.is_empty() {
+                        None
+                    } else {
+                        Some(r.template.to_string())
+                    },
                 )
             }
             None => (
@@ -61,6 +67,7 @@ pub fn classify(decomposed: &DecomposedMod, catalog: &HookCatalog) -> ClassifyOu
         let mut notes = Vec::new();
         let mut hook = None;
         let mut contract = None;
+        let mut hook_missing: Option<String> = None;
         let mut tier_final = tier;
         if let Some(hook_name) = &hook_name {
             match catalog.resolve(hook_name) {
@@ -80,56 +87,70 @@ pub fn classify(decomposed: &DecomposedMod, catalog: &HookCatalog) -> ClassifyOu
                 Err(_) => {
                     unresolved_hooks.push(hook_name.clone());
                     tier_final = tier_unmapped;
+                    hook_missing = Some(hook_name.clone());
                     notes.push(format!(
                         "hook `{hook_name}` missing from the pinned catalog; feature demoted"
                     ));
-                    gaps.push(GapReport {
-                        feature_id: String::new(), // filled below
-                        java_concept: concept.clone(),
-                        detail: format!(
-                            "Horizon hook `{hook_name}` not present in native-hooks.json"
-                        ),
-                        horizon_issue: Some("open one".to_string()),
-                    });
                 }
             }
         }
 
-        features.push(
-            Feature {
-                id: String::new(),
-                kind,
-                title: format!(
-                    "{} -> {}",
-                    simple,
-                    hook.as_ref()
-                        .map(|h| h.name.as_str())
-                        .unwrap_or("(no hook)")
-                ),
-                tier: tier_final,
-                sources: vec![format!(
-                    "{}{}",
-                    ev.handler_class,
-                    ev.handler_method
-                        .as_ref()
-                        .map(|m| format!("::{m}"))
-                        .unwrap_or_default()
-                )],
-                java_concept: Some(concept),
-                hook,
-                contract,
-                template,
-                notes,
-                parity_tests: Vec::new(),
-                data_files: Vec::new(),
-            }
-            .with_id(
-                &mod_id,
-                "event",
-                &ev.event_class,
-                ev.handler_method.as_deref(),
+        let feature = Feature {
+            id: String::new(),
+            kind,
+            title: format!(
+                "{} -> {}",
+                simple,
+                hook.as_ref()
+                    .map(|h| h.name.as_str())
+                    .unwrap_or("(no hook)")
             ),
+            tier: tier_final,
+            sources: vec![format!(
+                "{}{}",
+                ev.handler_class,
+                ev.handler_method
+                    .as_ref()
+                    .map(|m| format!("::{m}"))
+                    .unwrap_or_default()
+            )],
+            java_concept: Some(concept),
+            hook,
+            contract,
+            template,
+            notes,
+            parity_tests: Vec::new(),
+            data_files: Vec::new(),
+        }
+        .with_id(
+            &mod_id,
+            "event",
+            &ev.event_class,
+            ev.handler_method.as_deref(),
         );
+
+        // spec §3: a feature with no Horizon equivalent gets a GapReport —
+        // either the rule's hook is absent from the catalog, or no rule maps
+        // the concept at all (e.g. command registration, server-tick events).
+        if let Some(hook_name) = hook_missing {
+            gaps.push(GapReport {
+                feature_id: feature.id.clone(),
+                java_concept: feature.java_concept.clone().unwrap_or_default(),
+                detail: format!("Horizon hook `{hook_name}` not present in native-hooks.json"),
+                horizon_issue: Some("open one".to_string()),
+            });
+        } else if hook_name.is_none() {
+            gaps.push(GapReport {
+                feature_id: feature.id.clone(),
+                java_concept: feature.java_concept.clone().unwrap_or_default(),
+                detail: format!(
+                    "no mapping rule and no catalog hook for `{}` — no Horizon equivalent known",
+                    ev.event_class
+                ),
+                horizon_issue: Some("open one".to_string()),
+            });
+        }
+        features.push(feature);
     }
 
     // ---- 2) structural classes (block entities, entities, gui, renderers, networking...)

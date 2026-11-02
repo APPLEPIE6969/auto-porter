@@ -135,6 +135,28 @@ pub const RULES: &[MappingRule] = &[
         tier_unmapped: Tier::D,
         template: "hud_overlay.rs",
     },
+    MappingRule {
+        // TickEvent.PlayerTickEvent (NeoForge/Forge) and Fabric's
+        // ServerTickEvents.StartPlayerTick: the pre-tick phase.
+        // The seed catalog resolves the hook, but no template covers the
+        // pattern — this is the spec §10 LLM-fallback path.
+        concept: "PlayerTickEvent (start phase) | ServerTickEvents.START_PLAYER_TICK",
+        event_regex: "(PlayerTickEvent|StartPlayerTick)$",
+        hook: "player_tick_pre",
+        kind: FeatureKind::Unknown,
+        tier: Tier::B,
+        tier_unmapped: Tier::D,
+        template: "",
+    },
+    MappingRule {
+        concept: "PlayerTickEvent (end phase) | ServerTickEvents.END_PLAYER_TICK",
+        event_regex: "(EndPlayerTick)$",
+        hook: "player_tick_post",
+        kind: FeatureKind::Unknown,
+        tier: Tier::B,
+        tier_unmapped: Tier::D,
+        template: "",
+    },
 ];
 
 /// Structural rules applied to class hierarchies / constant-pool refs.

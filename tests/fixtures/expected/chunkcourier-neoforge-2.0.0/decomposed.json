@@ -1,0 +1,274 @@
+{
+  "metadata": {
+    "id": "chunkcourier",
+    "name": "ChunkCourier",
+    "version": "2.0.0",
+    "loader": "neoforge",
+    "minecraft_range": null,
+    "entrypoints": [],
+    "mixin_configs": [],
+    "description": "Chunk-load parcels, courier pads and remote menus.",
+    "authors": [
+      "fixture"
+    ]
+  },
+  "classes": [
+    {
+      "name": "com/example/chunkcourier/ChunkCourier",
+      "super_name": "java/lang/Object",
+      "interfaces": [],
+      "access": 33,
+      "fields": [
+        {
+          "name": "ticks",
+          "descriptor": "I",
+          "access": 2
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onBreak",
+          "descriptor": "(Lnet/minecraftforge/event/level/BlockEvent$BreakEvent;)V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onEntityInteract",
+          "descriptor": "(Lnet/minecraftforge/event/entity/player/PlayerInteractEvent$EntityInteract;)V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onPlayerTick",
+          "descriptor": "(Lnet/minecraftforge/event/TickEvent$PlayerTickEvent;)V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onRegisterCommands",
+          "descriptor": "(Lnet/minecraftforge/event/RegisterCommandsEvent;)V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/chunkcourier/ChunkCourier$CourierCommand",
+      "super_name": "java/lang/Object",
+      "interfaces": [],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/chunkcourier/blockentity/ParcelBlockEntity",
+      "super_name": "net/minecraft/world/level/block/entity/BlockEntity",
+      "interfaces": [],
+      "access": 33,
+      "fields": [
+        {
+          "name": "contents",
+          "descriptor": "I",
+          "access": 2
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "tick",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/chunkcourier/menu/ParcelMenu",
+      "super_name": "net/minecraft/world/inventory/AbstractContainerMenu",
+      "interfaces": [],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "stillValid",
+          "descriptor": "(Lnet/minecraft/world/entity/player/PlayerEntity;)Z",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/chunkcourier/mixin/MixinServerChunkCache",
+      "super_name": "java/lang/Object",
+      "interfaces": [],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "chunkcourier$beforeTickChunks",
+          "descriptor": "()V",
+          "access": 2,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/chunkcourier/net/CourierCustomPayload",
+      "super_name": "java/lang/Object",
+      "interfaces": [],
+      "access": 33,
+      "fields": [
+        {
+          "name": "parcelX",
+          "descriptor": "I",
+          "access": 1
+        },
+        {
+          "name": "parcelY",
+          "descriptor": "I",
+          "access": 1
+        },
+        {
+          "name": "parcelZ",
+          "descriptor": "I",
+          "access": 1
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    }
+  ],
+  "mixins": [
+    {
+      "class": "com/example/chunkcourier/mixin/MixinServerChunkCache",
+      "target_class": "net/minecraft/server/level/ServerChunkCache",
+      "injections": [
+        {
+          "kind": "inject",
+          "method": "chunkcourier$beforeTickChunks",
+          "selector": "tickChunks",
+          "at": "HEAD",
+          "cancellable": true
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "loader": "neoforge",
+      "event_class": "net/minecraftforge/event/RegisterCommandsEvent",
+      "handler_class": "com/example/chunkcourier/ChunkCourier",
+      "handler_method": "onRegisterCommands",
+      "registration": "annotation"
+    },
+    {
+      "loader": "neoforge",
+      "event_class": "net/minecraftforge/event/TickEvent$PlayerTickEvent",
+      "handler_class": "com/example/chunkcourier/ChunkCourier",
+      "handler_method": "onPlayerTick",
+      "registration": "annotation"
+    },
+    {
+      "loader": "neoforge",
+      "event_class": "net/minecraftforge/event/entity/player/PlayerInteractEvent$EntityInteract",
+      "handler_class": "com/example/chunkcourier/ChunkCourier",
+      "handler_method": "onEntityInteract",
+      "registration": "annotation"
+    },
+    {
+      "loader": "neoforge",
+      "event_class": "net/minecraftforge/event/level/BlockEvent$BreakEvent",
+      "handler_class": "com/example/chunkcourier/ChunkCourier",
+      "handler_method": "onBreak",
+      "registration": "annotation"
+    }
+  ],
+  "data_files": [
+    {
+      "path": "assets/chunkcourier/lang/en_us.json",
+      "sha256": "c0afb877732f99fcf4d1cc3686f2f28c38c01307196f7485848132ddd80294ea",
+      "size": 54,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/chunkcourier/models/block/parcel_block.json",
+      "sha256": "987dd9760beec407978657f4283c20c1f739ed55c80edd4545ab3c7ed70555a2",
+      "size": 103,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/chunkcourier/textures/block/parcel_block.png",
+      "sha256": "796120837694d3f3f29259cfeb25091698c2a0aa87873658d840b4993ee889b3",
+      "size": 3,
+      "kind": "asset"
+    },
+    {
+      "path": "data/chunkcourier/advancement/root.json",
+      "sha256": "d7ea28824e9538a25e2ad73f11c586109f87300b4095d3dafc1e155a267d56b6",
+      "size": 153,
+      "kind": "data"
+    },
+    {
+      "path": "data/chunkcourier/loot_table/blocks/parcel_block.json",
+      "sha256": "9e45f1714cd9f206242e7e13892f22425b6ad72350a7ff22c14b62c6c3de85ae",
+      "size": 141,
+      "kind": "data"
+    },
+    {
+      "path": "data/chunkcourier/recipe/parcel_block.json",
+      "sha256": "e8512d0bcccdcd1f8ee46f195baa30c7054eae3bbbf5c5c6bdc14904362c97af",
+      "size": 234,
+      "kind": "data"
+    }
+  ],
+  "config": {
+    "path": "chunkcourier.toml",
+    "format": "toml"
+  },
+  "dependencies": [],
+  "stats": {
+    "jar_entries": 15,
+    "class_entries": 6,
+    "parsed_classes": 6,
+    "data_files_in_jar": 6,
+    "mixin_injections": 1,
+    "event_listeners": 4,
+    "gate_violations": []
+  }
+}

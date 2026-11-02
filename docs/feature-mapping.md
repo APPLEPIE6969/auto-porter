@@ -20,6 +20,8 @@ NATIVE_HOOKS_API at this catalog: **2** · hooks defined: **22**
 | ItemTossEvent | `item_drop` *(proposed)* | listen | B |
 | KeyMapping registration | KeyBindingHelper.registerKeyBinding | `register_keybind` *(proposed)* | listen | B |
 | GUI layer/overlay events | HudRenderCallback | `hud_render` *(proposed)* | listen | B |
+| PlayerTickEvent (start phase) | ServerTickEvents.START_PLAYER_TICK | `player_tick_pre` *(proposed)* | listen | B |
+| PlayerTickEvent (end phase) | ServerTickEvents.END_PLAYER_TICK | `player_tick_post` *(proposed)* | listen | B |
 
 ## Structural mappings
 

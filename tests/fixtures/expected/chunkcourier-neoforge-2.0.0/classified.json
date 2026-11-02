@@ -1,0 +1,273 @@
+{
+  "gaps": [
+    {
+      "detail": "no mapping rule and no catalog hook for `net/minecraftforge/event/RegisterCommandsEvent` — no Horizon equivalent known",
+      "feature_id": "chunkcourier:event-registercommandsevent-onregistercommands",
+      "horizon_issue": "open one",
+      "java_concept": "event listener on net/minecraftforge/event/RegisterCommandsEvent"
+    }
+  ],
+  "plan": {
+    "data_files": [
+      "assets/chunkcourier/lang/en_us.json",
+      "assets/chunkcourier/models/block/parcel_block.json",
+      "assets/chunkcourier/textures/block/parcel_block.png",
+      "data/chunkcourier/advancement/root.json",
+      "data/chunkcourier/loot_table/blocks/parcel_block.json",
+      "data/chunkcourier/recipe/parcel_block.json"
+    ],
+    "features": [
+      {
+        "contract": null,
+        "data_files": [
+          "chunkcourier.toml"
+        ],
+        "hook": null,
+        "id": "chunkcourier:config-chunkcourier-toml",
+        "java_concept": "Config (ModConfigSpec) | config libs",
+        "kind": "config",
+        "notes": [
+          "carried as a data file; wiring needs a mod-publish `Host` helper once available"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_config_chunkcourier_toml_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_config_chunkcourier_toml_parity\ndescription: \"Parity scenario for config (B): config file chunkcourier.toml\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "chunkcourier.toml"
+        ],
+        "template": "config_load.rs",
+        "tier": "B",
+        "title": "config file chunkcourier.toml"
+      },
+      {
+        "contract": null,
+        "data_files": [
+          "assets/chunkcourier/lang/en_us.json",
+          "assets/chunkcourier/models/block/parcel_block.json",
+          "assets/chunkcourier/textures/block/parcel_block.png",
+          "data/chunkcourier/advancement/root.json",
+          "data/chunkcourier/loot_table/blocks/parcel_block.json",
+          "data/chunkcourier/recipe/parcel_block.json"
+        ],
+        "hook": null,
+        "id": "chunkcourier:data-content",
+        "java_concept": "Loot tables, worldgen JSON, recipes | data JSON -> data carry",
+        "kind": "data_only",
+        "notes": [
+          "carried by horizon-port-pack (or the offline fallback carrier)"
+        ],
+        "parity_tests": [],
+        "sources": [],
+        "template": null,
+        "tier": "A",
+        "title": "content data: chunkcourier"
+      },
+      {
+        "contract": "cancel",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "destroy_block"
+        },
+        "id": "chunkcourier:event-blockevent-breakevent-onbreak",
+        "java_concept": "BlockEvent.BreakEvent | PlayerBlockBreakEvents.BEFORE",
+        "kind": "block_break",
+        "notes": [],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_event_blockevent_breakevent_onbreak_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_blockevent_breakevent_onbreak_parity\ndescription: \"Parity scenario for block_break (B): BlockEvent$BreakEvent -> destroy_block\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/ChunkCourier::onBreak"
+        ],
+        "template": "block_break_hook.rs",
+        "tier": "B",
+        "title": "BlockEvent$BreakEvent -> destroy_block"
+      },
+      {
+        "contract": "cancel",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "entity_interact"
+        },
+        "id": "chunkcourier:event-playerinteractevent-entityinteract-onentityinteract",
+        "java_concept": "PlayerInteractEvent.EntityInteract | UseEntityCallback",
+        "kind": "entity_interact",
+        "notes": [
+          "hook `entity_interact` is a proposed name (not yet confirmed against the pinned native-hooks.json)"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_event_playerinteractevent_entityinteract_onentityinteract_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_playerinteractevent_entityinteract_onentityinteract_parity\ndescription: \"Parity scenario for entity_interact (B): PlayerInteractEvent$EntityInteract -> entity_interact\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/ChunkCourier::onEntityInteract"
+        ],
+        "template": "generic_listen_hook.rs",
+        "tier": "B",
+        "title": "PlayerInteractEvent$EntityInteract -> entity_interact"
+      },
+      {
+        "contract": null,
+        "data_files": [],
+        "hook": null,
+        "id": "chunkcourier:event-registercommandsevent-onregistercommands",
+        "java_concept": "event listener on net/minecraftforge/event/RegisterCommandsEvent",
+        "kind": "unknown",
+        "notes": [],
+        "parity_tests": [],
+        "sources": [
+          "com/example/chunkcourier/ChunkCourier::onRegisterCommands"
+        ],
+        "template": null,
+        "tier": "D",
+        "title": "RegisterCommandsEvent -> (no hook)"
+      },
+      {
+        "contract": "listen",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "player_tick_pre"
+        },
+        "id": "chunkcourier:event-tickevent-playertickevent-onplayertick",
+        "java_concept": "PlayerTickEvent (start phase) | ServerTickEvents.START_PLAYER_TICK",
+        "kind": "unknown",
+        "notes": [
+          "hook `player_tick_pre` is a proposed name (not yet confirmed against the pinned native-hooks.json)"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_event_tickevent_playertickevent_onplayertick_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_tickevent_playertickevent_onplayertick_parity\ndescription: \"Parity scenario for unknown (B): TickEvent$PlayerTickEvent -> player_tick_pre\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/ChunkCourier::onPlayerTick"
+        ],
+        "template": null,
+        "tier": "B",
+        "title": "TickEvent$PlayerTickEvent -> player_tick_pre"
+      },
+      {
+        "contract": null,
+        "data_files": [],
+        "hook": null,
+        "id": "chunkcourier:mixin-mixinserverchunkcache-chunkcourier-beforetickchunks",
+        "java_concept": "Generic Mixin | Mixin",
+        "kind": "generic_mixin",
+        "notes": [
+          "carried as a horizon-mixins HEAD injection on net/minecraft/server/level/ServerChunkCache (HEAD)"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_mixin_mixinserverchunkcache_chunkcourier_beforetickchunks_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_mixin_mixinserverchunkcache_chunkcourier_beforetickchunks_parity\ndescription: \"Parity scenario for generic_mixin (B): mixin inject @ tickChunks\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/mixin/MixinServerChunkCache::chunkcourier$beforeTickChunks"
+        ],
+        "template": "mixin_head.rs",
+        "tier": "B",
+        "title": "mixin inject @ tickChunks"
+      },
+      {
+        "contract": "listen",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "container_open"
+        },
+        "id": "chunkcourier:struct-abstractcontainermenu-parcelmenu",
+        "java_concept": "Screen / AbstractContainerMenu",
+        "kind": "gui",
+        "notes": [
+          "hook `container_open` is a proposed name (re-check against the pinned native-hooks.json)",
+          "Tier C: partly automatic, human design required"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_struct_abstractcontainermenu_parcelmenu_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_struct_abstractcontainermenu_parcelmenu_parity\ndescription: \"Parity scenario for gui (C): Screen / AbstractContainerMenu\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/menu/ParcelMenu"
+        ],
+        "template": "menu_screen.rs",
+        "tier": "C",
+        "title": "Screen / AbstractContainerMenu"
+      },
+      {
+        "contract": "listen",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "block_entity_tick"
+        },
+        "id": "chunkcourier:struct-blockentity-with-logic--tileentity-in-old-forge-parcelblockentity",
+        "java_concept": "BlockEntity with logic (TileEntity in old Forge)",
+        "kind": "block_entity",
+        "notes": [
+          "Tier C: partly automatic, human design required"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_struct_blockentity_with_logic__tileentity_in_old_forge_parcelblockentity_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_struct_blockentity_with_logic__tileentity_in_old_forge_parcelblockentity_parity\ndescription: \"Parity scenario for block_entity (C): BlockEntity with logic (TileEntity in old Forge)\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/blockentity/ParcelBlockEntity"
+        ],
+        "template": "block_entity.rs",
+        "tier": "C",
+        "title": "BlockEntity with logic (TileEntity in old Forge)"
+      },
+      {
+        "contract": "listen",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "net_from_client"
+        },
+        "id": "chunkcourier:struct-packets---payloadtyperegistry---networking-api-couriercustompayload",
+        "java_concept": "Custom payloads / packets | PayloadTypeRegistry + networking API",
+        "kind": "networking",
+        "notes": [
+          "hook `net_from_client` is a proposed name (re-check against the pinned native-hooks.json)",
+          "Tier C: partly automatic, human design required"
+        ],
+        "parity_tests": [
+          {
+            "name": "chunkcourier_struct_packets___payloadtyperegistry___networking_api_couriercustompayload_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_struct_packets___payloadtyperegistry___networking_api_couriercustompayload_parity\ndescription: \"Parity scenario for networking (C): Custom payloads / packets | PayloadTypeRegistry + networking API\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/chunkcourier/net/CourierCustomPayload"
+        ],
+        "template": "net_channel.rs",
+        "tier": "C",
+        "title": "Custom payloads / packets | PayloadTypeRegistry + networking API"
+      }
+    ],
+    "mod_id": "chunkcourier",
+    "tier_summary": {
+      "A": 1,
+      "B": 5,
+      "C": 3,
+      "D": 1
+    }
+  },
+  "unresolved_hooks": []
+}

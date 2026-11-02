@@ -43,6 +43,9 @@ pub enum ErrorType {
     LlmTimeout,
     /// Additive: no API key / unsupported provider configured for the fallback path.
     LlmUnavailable,
+    /// Additive: the provider answered but rejected or returned nothing usable
+    /// (HTTP error status, undecodable body, empty completion).
+    LlmFailed,
 }
 
 impl ErrorType {
@@ -59,6 +62,7 @@ impl ErrorType {
             ErrorType::OracleUnavailable => "oracle_unavailable",
             ErrorType::LlmTimeout => "llm_timeout",
             ErrorType::LlmUnavailable => "llm_unavailable",
+            ErrorType::LlmFailed => "llm_failed",
         }
     }
 }
