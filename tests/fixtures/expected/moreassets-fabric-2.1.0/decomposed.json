@@ -1,0 +1,61 @@
+{
+  "metadata": {
+    "id": "moreassets",
+    "name": "MoreAssets",
+    "version": "2.1.0",
+    "loader": "fabric",
+    "minecraft_range": ">=1.21",
+    "entrypoints": [],
+    "mixin_configs": [],
+    "description": "Pure content: textures, models, recipes.",
+    "authors": [
+      "fixture"
+    ]
+  },
+  "classes": [],
+  "mixins": [],
+  "events": [],
+  "data_files": [
+    {
+      "path": "assets/moreassets/lang/en_us.json",
+      "sha256": "67d206bfc1519359b8e9ac8f04b108d96e150438773e7b2f45365509cdd9e833",
+      "size": 47,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/moreassets/models/item/shiny_gear.json",
+      "sha256": "7cda51d8a1fd3206c67a47e8b8cf3a618550736a96432ff091c14016ff31899d",
+      "size": 101,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/moreassets/textures/item/shiny_gear.png",
+      "sha256": "796120837694d3f3f29259cfeb25091698c2a0aa87873658d840b4993ee889b3",
+      "size": 3,
+      "kind": "asset"
+    },
+    {
+      "path": "data/moreassets/recipe/shiny_gear.json",
+      "sha256": "a73e663729f844bda04f3170867e23bcd068b704cf087998de4b65a6727b798c",
+      "size": 197,
+      "kind": "data"
+    }
+  ],
+  "config": null,
+  "dependencies": [
+    {
+      "id": "minecraft",
+      "version_req": ">=1.21",
+      "kind": "required"
+    }
+  ],
+  "stats": {
+    "jar_entries": 6,
+    "class_entries": 0,
+    "parsed_classes": 0,
+    "data_files_in_jar": 4,
+    "mixin_injections": 0,
+    "event_listeners": 0,
+    "gate_violations": []
+  }
+}

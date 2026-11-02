@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shared",
+    "crates/decompose",
+    "crates/classify",
+    "crates/port-data",
+    "crates/port-code",
+    "crates/verify",
+    "crates/xtask",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+thiserror = "2"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+ureq = { version = "2", features = ["json"] }
+
+[profile.release]
+lto = "thin"

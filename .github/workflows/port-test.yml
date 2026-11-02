@@ -1,0 +1,211 @@
+name: Port Test
+
+on:
+  pull_request: { branches: [main] }
+  push:         { branches: [main] }
+
+permissions:
+  contents: read
+
+env:
+  HORIZON_REVISION: ${{ vars.HORIZON_REVISION }}   # full commit SHA
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace
+      - run: cargo test --workspace --doc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auto-porter
+          path: target/release/auto-porter
+
+  analyze-tests:                       # Phase 1 + 2 snapshots
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: auto-porter, path: bin/ }
+      - name: Analyze fixtures and diff against snapshots
+        run: |
+          chmod +x bin/auto-porter
+          fail=0
+          for jar in tests/fixtures/jars/*.jar; do
+            name=$(basename "$jar" .jar)
+            bin/auto-porter analyze "$jar" --output "target/actual/$name"
+            diff -r "tests/fixtures/expected/$name" "target/actual/$name" \
+              || { echo "::error::snapshot mismatch: $name"; fail=1; }
+          done
+          exit $fail
+
+  data-port-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: auto-porter, path: bin/ }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build horizon-port-pack at the pinned revision
+        run: |
+          # Package name confirmed (workspace member; docs/modpacks.md uses `cargo run -p horizon-port-pack`).
+          # If `cargo install` refuses the workspace package, fall back to
+          # `cargo build --locked --release -p horizon-port-pack` and point porter.toml at the binary.
+          cargo install --locked --git https://github.com/horizon-rust/horizon \
+            --rev "$HORIZON_REVISION" horizon-port-pack
+      - name: Port data and validate
+        run: |
+          chmod +x bin/auto-porter
+          fail=0
+          for jar in tests/fixtures/jars/*.jar; do
+            name=$(basename "$jar" .jar)
+            bin/auto-porter port "$jar" --data-only --output "target/data/$name" || fail=1
+            bin/auto-porter verify "target/data/$name" --static || fail=1
+          done
+          exit $fail
+
+  code-gen-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: auto-porter, path: bin/ }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "clippy, rustfmt" }
+      - name: Generate native mods for Tier A/B fixtures
+        run: |
+          chmod +x bin/auto-porter
+          for jar in tests/fixtures/jars/*.jar; do
+            bin/auto-porter port "$jar" --horizon-revision "$HORIZON_REVISION" \
+              --output "target/generated/$(basename "$jar" .jar)"
+          done
+      - name: Static + compile + lint every generated bundle
+        run: |
+          fail=0
+          for dir in target/generated/*/; do
+            bin/auto-porter verify "$dir" --static --compile || { echo "::error::FAIL $dir"; fail=1; }
+          done
+          exit $fail
+
+  xtask-mapping-gate:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate the feature mapping and fail on drift
+        run: |
+          cargo run -q -p xtask -- feature-mapping --hooks-json hooks/native-hooks.seed.json
+          git diff --exit-code docs/feature-mapping.md \
+            || { echo "::error::docs/feature-mapping.md is stale (run cargo run -p xtask -- feature-mapping)"; exit 1; }
+
+  parity-tests:
+    runs-on: [self-hosted, horizon]    # needs a licensed MC 26.3 copy; see §8 intro
+    needs: [build, code-gen-tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: auto-porter, path: bin/ }
+      - name: Fetch Java oracle server
+        run: python3 tests/parity/fetch_server.py --version 26.3 --out java-oracle --accept-eula   # Mojang manifest; never committed
+      - name: Build Horizon at the pinned revision
+        run: python3 tests/parity/build_horizon.py --rev "$HORIZON_REVISION" --out horizon-build
+      - name: Run parity scenarios (shard ${{ matrix.shard }})
+        run: |
+          xvfb-run -a python3 tests/parity/run.py \
+            --shard "${{ matrix.shard }}" --total-shards 4 \
+            --java-dir java-oracle --horizon-ctl horizon-build/horizon-ctl \
+            --scenarios tests/parity/scenarios/ --output tests/parity/results/
+      - run: python3 tests/parity/check.py --results tests/parity/results/ --fail-on-mismatch
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-results-${{ matrix.shard }}
+          path: tests/parity/results/
+
+  in-game-tests:
+    runs-on: [self-hosted, horizon]
+    needs: [build, code-gen-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Horizon (client + horizon-ctl) at the pinned revision
+        run: python3 tests/parity/build_horizon.py --rev "$HORIZON_REVISION" --out horizon-build
+      - name: Run smoke scenarios
+        run: |
+          xvfb-run -a python3 tests/in-game/run.py \
+            --horizon-ctl horizon-build/horizon-ctl \
+            --scenarios tests/in-game/smoke/ --golden tests/in-game/golden/ \
+            --ssim-threshold 0.95 --ssim-advisory \
+            --output tests/in-game/results/
+      - run: python3 tests/in-game/check.py --results tests/in-game/results/ --fail-on-mismatch
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: in-game-results, path: tests/in-game/results/
+
+  modpack-sweep:
+    runs-on: [self-hosted, horizon]
+    needs: [parity-tests, in-game-tests]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: auto-porter, path: bin/ }
+      - name: Fetch the Java oracle server
+        run: python3 tests/parity/fetch_server.py --version 26.3 --out tests/parity/java-oracle --accept-eula   # never committed
+      - name: Build Horizon at the pinned revision
+        run: python3 tests/parity/build_horizon.py --rev "$HORIZON_REVISION" --out horizon-build
+      - name: Download the reference set (20 mods, all tiers)
+        run: python3 tests/modpack/download.py --output tests/modpack/jars/   # Modrinth API; jars are not committed or redistributed
+      - run: |
+          chmod +x bin/auto-porter
+          bin/auto-porter port-pack tests/modpack/jars/ --horizon-revision "$HORIZON_REVISION" --output tests/modpack/output/
+          xvfb-run -a bin/auto-porter verify tests/modpack/output/ --parity --in-game --verbose || true
+      - run: python3 tests/modpack/summary.py --output tests/modpack/output/ --report tests/modpack/summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modpack-summary
+          path: tests/modpack/summary.json
+
+  report:
+    runs-on: ubuntu-latest
+    needs: [analyze-tests, data-port-tests, code-gen-tests, xtask-mapping-gate, parity-tests, in-game-tests, modpack-sweep]
+    if: always()
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: results, pattern: "*results*", merge-multiple: true }
+        continue-on-error: true
+      - run: python3 tests/report/aggregate.py --input results --output report.md
+      - name: Post report to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: fs.readFileSync('report.md', 'utf8'),
+            });

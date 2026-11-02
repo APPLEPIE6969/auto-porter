@@ -1,0 +1,28 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shared = { path = "../shared" }
+decompose = { path = "../decompose" }
+classify = { path = "../classify" }
+port-data = { path = "../port-data" }
+port-code = { path = "../port-code" }
+verify = { path = "../verify" }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+zip.workspace = true
+
+[lib]
+name = "auto_porter_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "auto-porter"
+path = "src/main.rs"
+
+[dev-dependencies]
+zip.workspace = true

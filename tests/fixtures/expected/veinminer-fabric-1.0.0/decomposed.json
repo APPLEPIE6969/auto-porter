@@ -1,0 +1,169 @@
+{
+  "metadata": {
+    "id": "veinminer",
+    "name": "VeinMiner",
+    "version": "1.0.0",
+    "loader": "fabric",
+    "minecraft_range": ">=1.21",
+    "entrypoints": [
+      "com.example.veinminer.VeinMiner"
+    ],
+    "mixin_configs": [
+      "veinminer.mixins.json"
+    ],
+    "description": "Break a vein of ore at once.",
+    "authors": [
+      "fixture"
+    ]
+  },
+  "classes": [
+    {
+      "name": "com/example/veinminer/VeinMiner",
+      "super_name": "java/lang/Object",
+      "interfaces": [
+        "net/fabricmc/api/ModInitializer"
+      ],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onInitialize",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/veinminer/VeinMinerHandler",
+      "super_name": "java/lang/Object",
+      "interfaces": [
+        "net/fabricmc/fabric/api/event/player/PlayerBlockBreakEvents$Before"
+      ],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "beforeBlockBreak",
+          "descriptor": "(Lnet/minecraft/world/entity/player/PlayerEntity;Lnet/minecraft/block/Block;)Z",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/veinminer/mixin/MixinBlock",
+      "super_name": "java/lang/Object",
+      "interfaces": [],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "veinminer$onBreak",
+          "descriptor": "()V",
+          "access": 2,
+          "has_code": true
+        }
+      ]
+    }
+  ],
+  "mixins": [
+    {
+      "class": "com/example/veinminer/mixin/MixinBlock",
+      "target_class": "net/minecraft/block/Block",
+      "injections": [
+        {
+          "kind": "inject",
+          "method": "veinminer$onBreak",
+          "selector": "playerDestroy",
+          "at": "HEAD",
+          "cancellable": true
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "loader": "fabric",
+      "event_class": "net/fabricmc/fabric/api/event/player/PlayerBlockBreakEvents$Before",
+      "handler_class": "com/example/veinminer/VeinMinerHandler",
+      "handler_method": "beforeBlockBreak",
+      "registration": "callback"
+    }
+  ],
+  "data_files": [
+    {
+      "path": "assets/veinminer/lang/en_us.json",
+      "sha256": "7fa3f72e95e67d4d72ba523181d4cb8bbaf21db4e1a300473b799eb94fc9b3e7",
+      "size": 50,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/veinminer/models/item/vein_pickaxe.json",
+      "sha256": "393c2088193d69dcc53e450ca059e27a68ea8e1f8ae304f1ff728c0d89912017",
+      "size": 102,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/veinminer/textures/item/vein_pickaxe.png",
+      "sha256": "796120837694d3f3f29259cfeb25091698c2a0aa87873658d840b4993ee889b3",
+      "size": 3,
+      "kind": "asset"
+    },
+    {
+      "path": "data/veinminer/loot_table/blocks/vein_ore.json",
+      "sha256": "073f18498e84a6ab8c226f0523da8919ff1170cc626225d40323c6361ba6495e",
+      "size": 134,
+      "kind": "data"
+    },
+    {
+      "path": "data/veinminer/recipe/vein_pickaxe.json",
+      "sha256": "ad262dedce1901e7b730a4835381dda8a7927c0bd1b54f6043ee58b3f8c4c191",
+      "size": 230,
+      "kind": "data"
+    }
+  ],
+  "config": {
+    "path": "veinminer.toml",
+    "format": "toml"
+  },
+  "dependencies": [
+    {
+      "id": "fabricloader",
+      "version_req": ">=0.15.0",
+      "kind": "required"
+    },
+    {
+      "id": "minecraft",
+      "version_req": ">=1.21",
+      "kind": "required"
+    }
+  ],
+  "stats": {
+    "jar_entries": 12,
+    "class_entries": 3,
+    "parsed_classes": 3,
+    "data_files_in_jar": 5,
+    "mixin_injections": 1,
+    "event_listeners": 1,
+    "gate_violations": []
+  }
+}

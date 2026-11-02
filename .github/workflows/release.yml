@@ -1,0 +1,34 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: tar.gz }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: zip }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - run: cargo build --workspace --release --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="auto-porter-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/auto-porter* "$name"/ 2>/dev/null || true
+          if [ "${{ matrix.ext }}" = "zip" ]; then 7z a "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: auto-porter-*
+          generate_release_notes: true

@@ -1,0 +1,165 @@
+{
+  "gaps": [],
+  "plan": {
+    "data_files": [
+      "assets/torchtools/lang/en_us.json",
+      "assets/torchtools/models/block/charged_lamp.json",
+      "assets/torchtools/textures/block/charged_lamp.png",
+      "data/torchtools/recipe/charged_lamp.json"
+    ],
+    "features": [
+      {
+        "contract": null,
+        "data_files": [
+          "torchtools.toml"
+        ],
+        "hook": null,
+        "id": "torchtools:config-torchtools-toml",
+        "java_concept": "Config (ModConfigSpec) | config libs",
+        "kind": "config",
+        "notes": [
+          "carried as a data file; wiring needs a mod-publish `Host` helper once available"
+        ],
+        "parity_tests": [
+          {
+            "name": "torchtools_config_torchtools_toml_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: torchtools_config_torchtools_toml_parity\ndescription: \"Parity scenario for config (B): config file torchtools.toml\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "torchtools.toml"
+        ],
+        "template": "config_load.rs",
+        "tier": "B",
+        "title": "config file torchtools.toml"
+      },
+      {
+        "contract": null,
+        "data_files": [
+          "assets/torchtools/lang/en_us.json",
+          "assets/torchtools/models/block/charged_lamp.json",
+          "assets/torchtools/textures/block/charged_lamp.png",
+          "data/torchtools/recipe/charged_lamp.json"
+        ],
+        "hook": null,
+        "id": "torchtools:data-content",
+        "java_concept": "Loot tables, worldgen JSON, recipes | data JSON -> data carry",
+        "kind": "data_only",
+        "notes": [
+          "carried by horizon-port-pack (or the offline fallback carrier)"
+        ],
+        "parity_tests": [],
+        "sources": [],
+        "template": null,
+        "tier": "A",
+        "title": "content data: torchtools"
+      },
+      {
+        "contract": "cancel",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "destroy_block"
+        },
+        "id": "torchtools:event-blockevent-breakevent-onbreak",
+        "java_concept": "BlockEvent.BreakEvent | PlayerBlockBreakEvents.BEFORE",
+        "kind": "block_break",
+        "notes": [],
+        "parity_tests": [
+          {
+            "name": "torchtools_event_blockevent_breakevent_onbreak_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: torchtools_event_blockevent_breakevent_onbreak_parity\ndescription: \"Parity scenario for block_break (B): BlockEvent$BreakEvent -> destroy_block\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/torchtools/TorchTools::onBreak"
+        ],
+        "template": "block_break_hook.rs",
+        "tier": "B",
+        "title": "BlockEvent$BreakEvent -> destroy_block"
+      },
+      {
+        "contract": "cancel",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "living_incoming_damage"
+        },
+        "id": "torchtools:event-livinghurtevent-onhurt",
+        "java_concept": "LivingHurtEvent / LivingDamageEvent / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE",
+        "kind": "entity_hurt",
+        "notes": [
+          "hook `living_incoming_damage` is a proposed name (not yet confirmed against the pinned native-hooks.json)"
+        ],
+        "parity_tests": [
+          {
+            "name": "torchtools_event_livinghurtevent_onhurt_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: torchtools_event_livinghurtevent_onhurt_parity\ndescription: \"Parity scenario for entity_hurt (B): LivingHurtEvent -> living_incoming_damage\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/torchtools/TorchTools::onHurt"
+        ],
+        "template": "player_hurt_hook.rs",
+        "tier": "B",
+        "title": "LivingHurtEvent -> living_incoming_damage"
+      },
+      {
+        "contract": "listen",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "block_entity_tick"
+        },
+        "id": "torchtools:struct-blockentity-with-logic--tileentity-in-old-forge-chargedlampblockentity",
+        "java_concept": "BlockEntity with logic (TileEntity in old Forge)",
+        "kind": "block_entity",
+        "notes": [
+          "Tier C: partly automatic, human design required"
+        ],
+        "parity_tests": [
+          {
+            "name": "torchtools_struct_blockentity_with_logic__tileentity_in_old_forge_chargedlampblockentity_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: torchtools_struct_blockentity_with_logic__tileentity_in_old_forge_chargedlampblockentity_parity\ndescription: \"Parity scenario for block_entity (C): BlockEntity with logic (TileEntity in old Forge)\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/torchtools/blockentity/ChargedLampBlockEntity"
+        ],
+        "template": "block_entity.rs",
+        "tier": "C",
+        "title": "BlockEntity with logic (TileEntity in old Forge)"
+      },
+      {
+        "contract": "listen",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "hud_render"
+        },
+        "id": "torchtools:struct-shader-overhaul--rendertype--postchain--shaderinstance--gamerenderer-over",
+        "java_concept": "Renderer/shader overhaul (RenderType, PostChain, ShaderInstance, GameRenderer overrides)",
+        "kind": "renderer",
+        "notes": [
+          "hook `hud_render` is a proposed name (re-check against the pinned native-hooks.json)",
+          "Tier D: report-only, no Horizon equivalent"
+        ],
+        "parity_tests": [],
+        "sources": [
+          "com/example/torchtools/client/ChargedLampShader"
+        ],
+        "template": "hud_overlay.rs",
+        "tier": "D",
+        "title": "Renderer/shader overhaul (RenderType, PostChain, ShaderInstance, GameRenderer overrides)"
+      }
+    ],
+    "mod_id": "torchtools",
+    "tier_summary": {
+      "A": 1,
+      "B": 3,
+      "C": 1,
+      "D": 1
+    }
+  },
+  "unresolved_hooks": []
+}

@@ -1,0 +1,39 @@
+{
+  "gaps": [],
+  "plan": {
+    "data_files": [
+      "assets/moreassets/lang/en_us.json",
+      "assets/moreassets/models/item/shiny_gear.json",
+      "assets/moreassets/textures/item/shiny_gear.png",
+      "data/moreassets/recipe/shiny_gear.json"
+    ],
+    "features": [
+      {
+        "contract": null,
+        "data_files": [
+          "assets/moreassets/lang/en_us.json",
+          "assets/moreassets/models/item/shiny_gear.json",
+          "assets/moreassets/textures/item/shiny_gear.png",
+          "data/moreassets/recipe/shiny_gear.json"
+        ],
+        "hook": null,
+        "id": "moreassets:data-content",
+        "java_concept": "Loot tables, worldgen JSON, recipes | data JSON -> data carry",
+        "kind": "data_only",
+        "notes": [
+          "carried by horizon-port-pack (or the offline fallback carrier)"
+        ],
+        "parity_tests": [],
+        "sources": [],
+        "template": null,
+        "tier": "A",
+        "title": "content data: moreassets"
+      }
+    ],
+    "mod_id": "moreassets",
+    "tier_summary": {
+      "A": 1
+    }
+  },
+  "unresolved_hooks": []
+}

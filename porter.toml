@@ -1,0 +1,33 @@
+# auto-porter configuration (spec §11, plus the local additions documented in docs/limitations.md)
+
+[horizon]
+revision        = "0000000000000000000000000000000000000000"   # PLACEHOLDER: replace with the full 40-hex Horizon commit you pin
+mixins_revision = "0000000000000000000000000000000000000000"   # PLACEHOLDER: full 40-hex horizon-mixins commit at that revision
+hooks_api       = 2                                            # set from NATIVE_HOOKS_API at the pinned revision; the build fails if it differs
+hooks_json      = "hooks/native-hooks.seed.json"               # replace with native-hooks.json from the pinned Horizon revision
+client_path     = "~/.horizon/horizon-client"
+ctl_path        = "~/.horizon/horizon-ctl"
+port_pack_path  = "~/.cargo/bin/horizon-port-pack"
+
+[llm]
+provider     = "anthropic"                     # or "openai", "local"
+model        = "claude-sonnet-5-5"             # current Sonnet; swap for claude-opus-5-5 on hard features
+max_retries  = 3
+timeout_secs = 60
+temperature  = 0.1
+
+[parity]
+java_server_dir = "tests/parity/java-oracle/"  # filled by fetch_server.py; never committed
+scenario_timeout_secs = 30
+shards = 4
+
+[in_game]
+ssim_threshold = 0.95
+ssim_advisory  = true
+golden_dir     = "tests/in-game/golden/"
+virtual_display = true
+
+[output]
+dir = "./output/"
+include_tests  = true
+include_report = true

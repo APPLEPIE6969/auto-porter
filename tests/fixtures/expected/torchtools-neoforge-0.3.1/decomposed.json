@@ -1,0 +1,143 @@
+{
+  "metadata": {
+    "id": "torchtools",
+    "name": "TorchTools",
+    "version": "0.3.1",
+    "loader": "neoforge",
+    "minecraft_range": null,
+    "entrypoints": [],
+    "mixin_configs": [],
+    "description": "Charged lamps and torch utilities.",
+    "authors": [
+      "fixture"
+    ]
+  },
+  "classes": [
+    {
+      "name": "com/example/torchtools/TorchTools",
+      "super_name": "java/lang/Object",
+      "interfaces": [],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onBreak",
+          "descriptor": "(Lnet/minecraftforge/event/level/BlockEvent$BreakEvent;)V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "onHurt",
+          "descriptor": "(Lnet/minecraftforge/event/entity/living/LivingHurtEvent;)V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/torchtools/blockentity/ChargedLampBlockEntity",
+      "super_name": "net/minecraft/world/level/block/entity/BlockEntity",
+      "interfaces": [],
+      "access": 33,
+      "fields": [
+        {
+          "name": "energy",
+          "descriptor": "I",
+          "access": 2
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        },
+        {
+          "name": "tick",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    },
+    {
+      "name": "com/example/torchtools/client/ChargedLampShader",
+      "super_name": "net/minecraft/client/renderer/PostChain",
+      "interfaces": [],
+      "access": 33,
+      "fields": [],
+      "methods": [
+        {
+          "name": "<init>",
+          "descriptor": "()V",
+          "access": 1,
+          "has_code": true
+        }
+      ]
+    }
+  ],
+  "mixins": [],
+  "events": [
+    {
+      "loader": "neoforge",
+      "event_class": "net/minecraftforge/event/entity/living/LivingHurtEvent",
+      "handler_class": "com/example/torchtools/TorchTools",
+      "handler_method": "onHurt",
+      "registration": "annotation"
+    },
+    {
+      "loader": "neoforge",
+      "event_class": "net/minecraftforge/event/level/BlockEvent$BreakEvent",
+      "handler_class": "com/example/torchtools/TorchTools",
+      "handler_method": "onBreak",
+      "registration": "annotation"
+    }
+  ],
+  "data_files": [
+    {
+      "path": "assets/torchtools/lang/en_us.json",
+      "sha256": "dee0686c42ca7472ce4963e8fac1d56d13817e7598289e45501f2e3cadbabdb4",
+      "size": 52,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/torchtools/models/block/charged_lamp.json",
+      "sha256": "02fbb95e645f51195da65343b1c1cb5dc8c372a0124c0e50fa06df33739d586a",
+      "size": 101,
+      "kind": "asset"
+    },
+    {
+      "path": "assets/torchtools/textures/block/charged_lamp.png",
+      "sha256": "796120837694d3f3f29259cfeb25091698c2a0aa87873658d840b4993ee889b3",
+      "size": 3,
+      "kind": "asset"
+    },
+    {
+      "path": "data/torchtools/recipe/charged_lamp.json",
+      "sha256": "abd2e8eb27d9e92220292c6f8b04531f3644d17464ba53aa7c91baa9b68aa678",
+      "size": 269,
+      "kind": "data"
+    }
+  ],
+  "config": {
+    "path": "torchtools.toml",
+    "format": "toml"
+  },
+  "dependencies": [],
+  "stats": {
+    "jar_entries": 10,
+    "class_entries": 3,
+    "parsed_classes": 3,
+    "data_files_in_jar": 4,
+    "mixin_injections": 0,
+    "event_listeners": 2,
+    "gate_violations": []
+  }
+}

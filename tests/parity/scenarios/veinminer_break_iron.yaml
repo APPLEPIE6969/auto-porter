@@ -1,0 +1,21 @@
+# Spec §6.2 reference scenario. Survival mode: creative breaking drops nothing
+# and iron ore drops raw_iron, not iron_ore.
+name: veinminer_break_iron
+description: "Breaking one iron ore with Veinminer breaks connected ore"
+setup:
+  world: flat
+  seed: 42
+  player: survival
+  inventory: [{ id: minecraft:iron_pickaxe, slot: 0 }]
+  place_blocks:
+    - { id: minecraft:iron_ore, at: [10, 64, 10] }
+    - { id: minecraft:iron_ore, at: [11, 64, 10] }
+    - { id: minecraft:iron_ore, at: [10, 64, 11] }
+    - { id: minecraft:stone,    at: [12, 64, 10] }
+actions:
+  - break_block: { at: [10, 64, 10], tool: minecraft:iron_pickaxe }
+expected:
+  broken_blocks: [[10, 64, 10], [11, 64, 10], [10, 64, 11]]
+  not_broken:    [[12, 64, 10]]
+  drops:
+    - { id: minecraft:raw_iron, count: 3 }

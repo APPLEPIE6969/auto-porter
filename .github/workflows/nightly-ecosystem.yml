@@ -1,0 +1,55 @@
+name: Nightly Ecosystem Sweep
+
+on:
+  schedule: [{ cron: "0 3 * * *" }]       # 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      full_verify: { description: "Also run parity + in-game (self-hosted)", type: boolean, default: false }
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  HORIZON_REVISION: ${{ vars.HORIZON_REVISION_NIGHTLY || 'main' }}   # 'main' is intentional here; record the resolved SHA in the report
+
+jobs:
+  sweep:
+    runs-on: ${{ inputs.full_verify && fromJSON('["self-hosted","horizon"]') || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release
+      - name: Download top 100 mods
+        env:
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}   # CurseForge's API requires a key
+        run: python3 tests/ecosystem/download_top100.py --sources modrinth,curseforge --output tests/ecosystem/jars/
+      - name: Fetch the Java oracle server (full verify only)
+        if: ${{ inputs.full_verify }}
+        run: python3 tests/parity/fetch_server.py --version 26.3 --out tests/parity/java-oracle --accept-eula
+      - name: Build Horizon at the pinned revision (full verify only)
+        if: ${{ inputs.full_verify }}
+        run: python3 tests/parity/build_horizon.py --rev "$HORIZON_REVISION" --out horizon-build
+      - name: Port all
+        run: ./target/release/auto-porter port-pack tests/ecosystem/jars/ --horizon-revision "$HORIZON_REVISION" --output tests/ecosystem/output/ --continue-on-error
+      - name: Verify
+        run: |
+          flags="--static --compile"
+          if [ "${{ inputs.full_verify }}" = "true" ]; then flags="$flags --parity --in-game"; fi
+          xvfb-run -a ./target/release/auto-porter verify tests/ecosystem/output/ $flags --verbose --continue-on-error || true
+      - run: python3 tests/ecosystem/report.py --output tests/ecosystem/output/ --report tests/ecosystem/report.md
+      - name: Update the status issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              issue_number: Number('${{ vars.ECOSYSTEM_ISSUE_NUMBER }}'),   # repo variable, not a hard-coded number
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: fs.readFileSync('tests/ecosystem/report.md', 'utf8'),
+            });
+      - uses: actions/upload-artifact@v4
+        with: { name: ecosystem-report, path: tests/ecosystem/report.md, retention-days: 30 }

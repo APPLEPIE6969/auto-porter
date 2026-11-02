@@ -1,0 +1,28 @@
+{
+  "native_hooks_api": 2,
+  "source": "SEED CATALOG - built from the Horizon docs (docs/native-hooks-neoforge.md confirmed names + PR #3964/#6216/#5638/#6452). This is NOT the real native-hooks.json: replace hooks_json in porter.toml with native-hooks.json from the pinned Horizon revision. Rows marked confirmed=false are proposed names that MUST be re-checked against the pinned catalog.",
+  "hooks": [
+    { "name": "destroy_block", "contract": "cancel", "hook_version": 1, "neoforge": "BlockEvent.BreakEvent", "side": "server", "cancellable": true, "confirmed": true, "host_helpers": ["play_sound", "spawn_particle"] },
+    { "name": "place_block", "contract": "cancel", "hook_version": 1, "neoforge": "BlockEvent.EntityPlaceEvent", "side": "server", "cancellable": true, "confirmed": true, "host_helpers": [] },
+    { "name": "right_click_block", "contract": "replace", "hook_version": 1, "neoforge": "PlayerInteractEvent.RightClickBlock", "side": "both", "cancellable": true, "confirmed": true, "host_helpers": ["give_item", "play_sound"] },
+    { "name": "block_entity_tick", "contract": "listen", "hook_version": 1, "neoforge": "BlockEntityTicker", "side": "server", "cancellable": false, "confirmed": true, "host_helpers": ["read_energy", "write_energy", "read_fluid", "write_fluid", "set_redstone"] },
+    { "name": "block_entity_container", "contract": "listen", "hook_version": 1, "neoforge": "Container lookup on a BlockEntity", "side": "server", "cancellable": false, "confirmed": true, "host_helpers": [] },
+    { "name": "data_pack_files", "contract": "collect", "hook_version": 1, "neoforge": "AddReloadListenerEvent", "side": "server", "cancellable": false, "confirmed": true, "host_helpers": [] },
+    { "name": "right_click_item", "contract": "replace", "hook_version": 1, "neoforge": "PlayerInteractEvent.RightClickItem", "side": "both", "cancellable": true, "confirmed": false, "host_helpers": ["give_item", "play_sound"] },
+    { "name": "left_click_block", "contract": "cancel", "hook_version": 1, "neoforge": "PlayerInteractEvent.LeftClickBlock", "side": "both", "cancellable": true, "confirmed": false, "host_helpers": [] },
+    { "name": "entity_interact", "contract": "cancel", "hook_version": 1, "neoforge": "PlayerInteractEvent.EntityInteract", "side": "both", "cancellable": true, "confirmed": false, "host_helpers": [] },
+    { "name": "living_incoming_damage", "contract": "cancel", "hook_version": 1, "neoforge": "LivingIncomingDamageEvent", "side": "server", "cancellable": true, "confirmed": false, "host_helpers": ["set_health"] },
+    { "name": "living_death", "contract": "listen", "hook_version": 1, "neoforge": "LivingDeathEvent", "side": "server", "cancellable": false, "confirmed": false, "host_helpers": ["drop_item", "play_sound"] },
+    { "name": "entity_join_level", "contract": "listen", "hook_version": 1, "neoforge": "EntityJoinLevelEvent", "side": "server", "cancellable": false, "confirmed": false, "host_helpers": ["spawn_entity"] },
+    { "name": "player_tick_pre", "contract": "listen", "hook_version": 1, "neoforge": "PlayerTickEvent.Pre", "side": "both", "cancellable": false, "confirmed": false, "host_helpers": ["player_position", "apply_potion_effect"] },
+    { "name": "player_tick_post", "contract": "listen", "hook_version": 1, "neoforge": "PlayerTickEvent.Post", "side": "both", "cancellable": false, "confirmed": false, "host_helpers": ["player_position", "apply_potion_effect"] },
+    { "name": "container_open", "contract": "listen", "hook_version": 1, "neoforge": "PlayerContainerEvent.Open", "side": "both", "cancellable": false, "confirmed": false, "host_helpers": [] },
+    { "name": "container_close", "contract": "listen", "hook_version": 1, "neoforge": "PlayerContainerEvent.Close", "side": "both", "cancellable": false, "confirmed": false, "host_helpers": [] },
+    { "name": "item_pickup", "contract": "cancel", "hook_version": 1, "neoforge": "ItemEntityPickupEvent", "side": "server", "cancellable": true, "confirmed": false, "host_helpers": [] },
+    { "name": "item_drop", "contract": "listen", "hook_version": 1, "neoforge": "ItemTossEvent", "side": "both", "cancellable": false, "confirmed": false, "host_helpers": [] },
+    { "name": "register_keybind", "contract": "listen", "hook_version": 1, "neoforge": "RegisterKeyMappingsEvent", "side": "client", "cancellable": false, "confirmed": false, "host_helpers": ["send_chat"] },
+    { "name": "hud_render", "contract": "listen", "hook_version": 1, "neoforge": "RegisterGuiLayersEvent / RenderGuiLayerEvent", "side": "client", "cancellable": false, "confirmed": false, "host_helpers": ["draw_texture", "draw_text"] },
+    { "name": "net_from_client", "contract": "listen", "hook_version": 1, "neoforge": "Custom payload / packet handler (client to server)", "side": "server", "cancellable": false, "confirmed": false, "host_helpers": ["send_to_client", "send_to_server"] },
+    { "name": "net_from_server", "contract": "listen", "hook_version": 1, "neoforge": "Custom payload / packet handler (server to client)", "side": "client", "cancellable": false, "confirmed": false, "host_helpers": ["send_to_client", "send_to_server"] }
+  ]
+}

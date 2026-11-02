@@ -1,0 +1,10 @@
+# Spec §6.3 reference smoke (consumed by tests/in-game/run.py, NOT by horizon-ctl)
+steps:
+  - launch:   { world: test_world, seed: 42, creative: false }
+  - assert_ready: {}
+  - goto:     { pos: [10, 64, 10], near: 2.5 }
+  - break:    { pos: [10, 64, 10] }
+  - assert_block: { pos: [11, 64, 10], id: minecraft:air }
+  - assert_block: { pos: [12, 64, 10], id: minecraft:stone }
+  - inventory: { contains: { id: minecraft:raw_iron, min_count: 3 } }
+  - screenshot: { path: out/veinminer.png, compare_with: golden/veinminer_break.png, ssim_min: 0.95 }

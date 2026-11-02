@@ -1,0 +1,114 @@
+{
+  "gaps": [],
+  "plan": {
+    "data_files": [
+      "assets/veinminer/lang/en_us.json",
+      "assets/veinminer/models/item/vein_pickaxe.json",
+      "assets/veinminer/textures/item/vein_pickaxe.png",
+      "data/veinminer/loot_table/blocks/vein_ore.json",
+      "data/veinminer/recipe/vein_pickaxe.json"
+    ],
+    "features": [
+      {
+        "contract": null,
+        "data_files": [
+          "veinminer.toml"
+        ],
+        "hook": null,
+        "id": "veinminer:config-veinminer-toml",
+        "java_concept": "Config (ModConfigSpec) | config libs",
+        "kind": "config",
+        "notes": [
+          "carried as a data file; wiring needs a mod-publish `Host` helper once available"
+        ],
+        "parity_tests": [
+          {
+            "name": "veinminer_config_veinminer_toml_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: veinminer_config_veinminer_toml_parity\ndescription: \"Parity scenario for config (B): config file veinminer.toml\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "veinminer.toml"
+        ],
+        "template": "config_load.rs",
+        "tier": "B",
+        "title": "config file veinminer.toml"
+      },
+      {
+        "contract": null,
+        "data_files": [
+          "assets/veinminer/lang/en_us.json",
+          "assets/veinminer/models/item/vein_pickaxe.json",
+          "assets/veinminer/textures/item/vein_pickaxe.png",
+          "data/veinminer/loot_table/blocks/vein_ore.json",
+          "data/veinminer/recipe/vein_pickaxe.json"
+        ],
+        "hook": null,
+        "id": "veinminer:data-content",
+        "java_concept": "Loot tables, worldgen JSON, recipes | data JSON -> data carry",
+        "kind": "data_only",
+        "notes": [
+          "carried by horizon-port-pack (or the offline fallback carrier)"
+        ],
+        "parity_tests": [],
+        "sources": [],
+        "template": null,
+        "tier": "A",
+        "title": "content data: veinminer"
+      },
+      {
+        "contract": "cancel",
+        "data_files": [],
+        "hook": {
+          "hook_version": 1,
+          "name": "destroy_block"
+        },
+        "id": "veinminer:event-playerblockbreakevents-before-beforeblockbreak",
+        "java_concept": "BlockEvent.BreakEvent | PlayerBlockBreakEvents.BEFORE",
+        "kind": "block_break",
+        "notes": [],
+        "parity_tests": [
+          {
+            "name": "veinminer_event_playerblockbreakevents_before_beforeblockbreak_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: veinminer_event_playerblockbreakevents_before_beforeblockbreak_parity\ndescription: \"Parity scenario for block_break (B): PlayerBlockBreakEvents$Before -> destroy_block\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/veinminer/VeinMinerHandler::beforeBlockBreak"
+        ],
+        "template": "block_break_hook.rs",
+        "tier": "B",
+        "title": "PlayerBlockBreakEvents$Before -> destroy_block"
+      },
+      {
+        "contract": null,
+        "data_files": [],
+        "hook": null,
+        "id": "veinminer:mixin-mixinblock-veinminer-onbreak",
+        "java_concept": "Generic Mixin | Mixin",
+        "kind": "generic_mixin",
+        "notes": [
+          "carried as a horizon-mixins HEAD injection on net/minecraft/block/Block (HEAD)"
+        ],
+        "parity_tests": [
+          {
+            "name": "veinminer_mixin_mixinblock_veinminer_onbreak_parity",
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: veinminer_mixin_mixinblock_veinminer_onbreak_parity\ndescription: \"Parity scenario for generic_mixin (B): mixin inject @ playerDestroy\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+          }
+        ],
+        "sources": [
+          "com/example/veinminer/mixin/MixinBlock::veinminer$onBreak"
+        ],
+        "template": "mixin_head.rs",
+        "tier": "B",
+        "title": "mixin inject @ playerDestroy"
+      }
+    ],
+    "mod_id": "veinminer",
+    "tier_summary": {
+      "A": 1,
+      "B": 3
+    }
+  },
+  "unresolved_hooks": []
+}

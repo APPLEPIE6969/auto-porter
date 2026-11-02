@@ -1,0 +1,12 @@
+/target
+/output
+tests/parity/java-oracle/
+tests/in-game/results/
+tests/in-game/out/
+tests/ecosystem/jars/
+tests/ecosystem/output/
+tests/modpack/jars/
+tests/modpack/output/
+native/
+*.hnmod
+*.hmod
