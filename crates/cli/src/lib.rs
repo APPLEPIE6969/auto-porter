@@ -93,6 +93,13 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
     );
     let mut errors: Vec<PortError> = decompiled.gate_errors.clone();
 
+    // An explicitly passed but empty --horizon-revision (e.g. CI expanding an
+    // unset repo variable) means "not provided", never "pin to ''".
+    let horizon_revision = opts
+        .horizon_revision
+        .clone()
+        .filter(|s| !s.trim().is_empty());
+
     // ---- Phase 3: Port data
     let data = port_data::port_data(jar, mod_ir, cfg, out_dir);
     report.data_carry = Some(data.carrier.clone());
@@ -120,8 +127,7 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
             hooks_used: Vec::new(),
         }
     } else {
-        let revision = opts
-            .horizon_revision
+        let revision = horizon_revision
             .clone()
             .unwrap_or_else(|| cfg.horizon.revision.clone());
         let outcome = port_code::port_code(
@@ -153,7 +159,7 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
     };
 
     report.horizon_revision = Some(
-        opts.horizon_revision
+        horizon_revision
             .clone()
             .unwrap_or_else(|| cfg.horizon.revision.clone()),
     );

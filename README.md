@@ -82,6 +82,22 @@ What needs Horizon-side tooling (documented in
   self-hosted runner),
 - LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
 
+## CI
+
+`.github/workflows/port-test.yml` runs the hosted, Horizon-independent set on
+every push/PR: build + clippy + fmt + tests, the analyze snapshot diff, the
+data-only ports with static verification, full Tier A/B code generation with
+`verify --static --compile` (the compile layer reports `skipped` without the
+launcher), and the xtask mapping-drift gate.
+
+The jobs that need a pinned Horizon revision (`data-port-tests` via
+`cargo install --rev`, and the parity / in-game / modpack jobs on the
+self-hosted `horizon` runner) are gated on the `HORIZON_REVISION` repository
+variable — they stay marked *skipped* until you set it (which also signals
+that a labeled runner is registered). `nightly-ecosystem.yml` runs the
+top-100 sweep nightly on hosted runners; its full-verify mode and the status
+issue comment are likewise gated on repo variables.
+
 ## Configuration
 
 `porter.toml` (spec §11) pins the Horizon revision, `NATIVE_HOOKS_API`, tool

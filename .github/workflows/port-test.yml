@@ -49,6 +49,9 @@ jobs:
           exit $fail
 
   data-port-tests:
+    # Needs `cargo install --git horizon --rev <sha>`: impossible without the
+    # pinned revision. Set the HORIZON_REVISION repo variable to opt in.
+    if: vars.HORIZON_REVISION != ''
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -113,7 +116,12 @@ jobs:
             || { echo "::error::docs/feature-mapping.md is stale (run cargo run -p xtask -- feature-mapping)"; exit 1; }
 
   parity-tests:
-    runs-on: [self-hosted, horizon]    # needs a licensed MC 26.3 copy; see §8 intro
+    # Self-hosted runner with a licensed MC 26.3 copy (§8 intro). Setting the
+    # HORIZON_REVISION repo variable is the opt-in signal that such a runner
+    # is registered with the `horizon` label; without it these jobs are
+    # skipped so hosted CI still completes.
+    if: vars.HORIZON_REVISION != ''
+    runs-on: [self-hosted, horizon]
     needs: [build, code-gen-tests]
     strategy:
       fail-fast: false
@@ -141,6 +149,7 @@ jobs:
           path: tests/parity/results/
 
   in-game-tests:
+    if: vars.HORIZON_REVISION != ''
     runs-on: [self-hosted, horizon]
     needs: [build, code-gen-tests]
     steps:
@@ -158,12 +167,13 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: in-game-results, path: tests/in-game/results/
+          name: in-game-results
+          path: tests/in-game/results/
 
   modpack-sweep:
+    if: vars.HORIZON_REVISION != '' && github.event_name == 'push'
     runs-on: [self-hosted, horizon]
     needs: [parity-tests, in-game-tests]
-    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

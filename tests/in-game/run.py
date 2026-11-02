@@ -2,7 +2,7 @@
 """In-game smoke runner (spec §6.3): drives horizon-ctl through the scenario
 steps; assertions, retries and screenshots stay in Python. `horizon-ctl script`
 batches are only emitted for purely linear stretches."""
-import argparse, glob, json, os, subprocess, sys
+import argparse, glob, json, os, shutil, subprocess, sys
 
 import yaml
 
@@ -37,6 +37,9 @@ def main():
     ap.add_argument("--output", required=True)
     ap.add_argument("--ssim-threshold", type=float, default=0.95)
     ap.add_argument("--ssim-advisory", action="store_true")
+    ap.add_argument("--record-golden", action="store_true",
+                    help="record successful screenshots as the golden baselines "
+                         "instead of comparing against them (runner-side only)")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -88,7 +91,12 @@ def main():
                     rc, out, err = sh([ctl, "screenshot", out_path])
                     passed = rc == 0 and os.path.isfile(out_path)
                     golden = os.path.join(args.golden, os.path.basename(out_path))
-                    if passed and os.path.isfile(golden):
+                    if passed and args.record_golden:
+                        os.makedirs(args.golden, exist_ok=True)
+                        shutil.copyfile(out_path, golden)
+                        results["notes"].append(
+                            f"recorded golden baseline {os.path.basename(golden)}")
+                    elif passed and os.path.isfile(golden):
                         score = ssim(out_path, golden)
                         if score is not None:
                             results["notes"].append(f"ssim {os.path.basename(out_path)}: {score:.3f}")

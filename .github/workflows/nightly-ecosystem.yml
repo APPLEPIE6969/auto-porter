@@ -41,6 +41,8 @@ jobs:
           xvfb-run -a ./target/release/auto-porter verify tests/ecosystem/output/ $flags --verbose --continue-on-error || true
       - run: python3 tests/ecosystem/report.py --output tests/ecosystem/output/ --report tests/ecosystem/report.md
       - name: Update the status issue
+        # Only possible when the target issue number is configured as a repo variable.
+        if: vars.ECOSYSTEM_ISSUE_NUMBER != ''
         uses: actions/github-script@v7
         with:
           script: |
