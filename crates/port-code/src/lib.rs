@@ -9,6 +9,7 @@ use shared::error::{ErrorType, Phase, PortError};
 use shared::report::{CheckStatus, CompileResult, FeatureOutcome, FeatureStatus};
 use shared::types::*;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct CodeGenOutcome {
     pub hnmod: Option<PathBuf>,
@@ -310,8 +311,9 @@ fn llm_fallback(
         .unwrap_or_default();
     let examples = load_template("mixin_head.rs").unwrap_or_default();
 
+    let max_attempts = cfg.llm.effective_max_attempts();
     let mut attempt = 0;
-    while attempt <= cfg.llm.max_retries {
+    while attempt < max_attempts {
         let req = llm::LlmRequest {
             mod_id: decomposed.metadata.id.clone(),
             hook_name: hook.name.clone(),
@@ -347,11 +349,21 @@ fn llm_fallback(
                 errors.push(e.for_feature(feature.id.clone()));
                 return None;
             }
+            // Auth / bad-model / malformed-request: retrying cannot heal it.
+            llm::LlmOutcome::Fatal(e) => {
+                errors.push(e.for_feature(feature.id.clone()));
+                return None;
+            }
             llm::LlmOutcome::Timeout(e) | llm::LlmOutcome::Failed(e) => {
                 errors.push(e.for_feature(feature.id.clone()));
             }
         }
         attempt += 1;
+        if attempt < max_attempts {
+            // Back off between attempts so rate-limited providers (NVIDIA's
+            // free tier in particular) get a fair poll within the budget.
+            std::thread::sleep(Duration::from_millis(cfg.llm.retry_delay_ms));
+        }
     }
     None
 }

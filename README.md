@@ -31,9 +31,10 @@ cargo run -p cli -- port tests/fixtures/jars/veinminer-fabric-1.0.0.jar \
 
 # Complex fixture: spans all four tiers, incl. the §10 LLM fallback
 # (player-tick listener -> player_tick_pre hook, no template) and a
-# deliberate Tier D gap (command registration). With porter.toml's default
-# provider = openrouter / model = thinkingmachines/inkling-small:free:
-OPENROUTER_API_KEY=sk-or-... cargo run -p cli -- \
+# deliberate Tier D gap (command registration). Provider/model come from
+# porter.toml ([llm]); override per-run with global flags:
+NVIDIA_API_KEY=nvapi-... cargo run -p cli -- --llm-provider nvidia \
+  --llm-model minimaxai/minimax-m3.1-flash \
   port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar --output ./output/ --verbose
 # without a key the same run degrades honestly: llm_unavailable on the
 # tick feature, everything template-covered still ports
@@ -89,8 +90,21 @@ What needs Horizon-side tooling (documented in
   possible for native mods),
 - parity + in-game layers (`horizon-ctl` + a licensed MC 26.3 copy on a
   self-hosted runner),
-- LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY`;
-  default provider `openrouter` with model `thinkingmachines/inkling-small:free`).
+- LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` /
+  `NVIDIA_API_KEY`; default provider `openrouter` with model
+  `thinkingmachines/inkling-small:free`). **Note:** OpenRouter gates that
+  `:free` sku behind registered "agentic harnesses" — requests with a valid
+  key get HTTP 403 `...only available on agentic harnesses...`. Use
+  `--llm-provider nvidia --llm-model minimaxai/minimax-m3.1-flash` (or another
+  model) for a working free path.
+- Retry policy: providers get `max_retries` (default 3) extra attempts on
+  retryable failures (408/429/5xx/transport/empty), with `retry_delay_ms`
+  between attempts. **NVIDIA NIM always gets the documented ceiling of 100
+  attempts per request** (its free tier rate-limits hard); auth/4xx client
+  errors are fatal and never retried. `reasoning_effort` (default `high`) is
+  sent to NVIDIA. `base_url` overrides the endpoint for self-hosted NIM or
+  gateways — `scripts/mock_llm_server.py` uses it to test the retry policy
+  without a key.
 
 ## CI
 

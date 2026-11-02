@@ -27,6 +27,13 @@ struct Cli {
     /// to the in-tree seed catalog)
     #[arg(long, global = true)]
     hooks_json: Option<PathBuf>,
+    /// LLM provider override: anthropic | openai | openrouter | nvidia
+    /// (overrides porter.toml [llm].provider)
+    #[arg(long, global = true)]
+    llm_provider: Option<String>,
+    /// LLM model id override (overrides porter.toml [llm].model)
+    #[arg(long, global = true)]
+    llm_model: Option<String>,
     /// Verbose logging on stderr
     #[arg(long, global = true)]
     verbose: bool,
@@ -86,13 +93,21 @@ enum Command {
 
 fn main() {
     let cli = Cli::parse();
-    let cfg = match &cli.config {
+    let mut cfg = match &cli.config {
         Some(p) => PorterConfig::load(p),
         None => {
             let p = PathBuf::from("porter.toml");
             PorterConfig::load(&p)
         }
     };
+    // Global overrides beat porter.toml — CI and users switch providers
+    // without rewriting the config file.
+    if let Some(p) = &cli.llm_provider {
+        cfg.llm.provider = p.clone();
+    }
+    if let Some(m) = &cli.llm_model {
+        cfg.llm.model = m.clone();
+    }
 
     let exit = run(cli, cfg);
     std::process::exit(exit);

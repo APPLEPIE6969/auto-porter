@@ -83,6 +83,7 @@ jobs:
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -103,6 +104,49 @@ jobs:
             bin/auto-porter verify "$dir" --static --compile || { echo "::error::FAIL $dir"; fail=1; }
           done
           exit $fail
+      - name: LLM smoke — real NVIDIA NIM generation (gated on secret)
+        timeout-minutes: 15
+        run: |
+          chmod +x bin/auto-porter
+          if [ -z "$NVIDIA_API_KEY" ]; then
+            echo "NVIDIA_API_KEY not set — LLM smoke skipped (LLM fallback stays honest)"
+            exit 0
+          fi
+          # Informational: show what OpenRouter answers for the default model
+          # (currently 403 "agentic harnesses" gate on the :free sku).
+          rm -rf target/llm-or
+          bin/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
+            --output target/llm-or || true
+          python3 - <<'PY'
+          import json
+          r = json.load(open("target/llm-or/chunkcourier-report.json"))
+          or_errs = [e for e in r["errors"]
+                     if str(e.get("error_type", "")).startswith("llm_")]
+          print("openrouter default-model result:",
+                or_errs[0]["error_type"] if or_errs else "no llm errors",
+                "|", (or_errs[0]["message"][:160] if or_errs else ""))
+          PY
+          # The real test: NVIDIA NIM with reasoning_effort=high, up to 100
+          # attempts per request. The tick hook has no template, so success
+          # means the LLM fallback generated code that passed the static lint.
+          rm -rf target/llm-smoke
+          bin/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
+            --llm-provider nvidia --llm-model minimaxai/minimax-m3.1-flash \
+            --output target/llm-smoke
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open("target/llm-smoke/chunkcourier-report.json"))
+          tick = [f for f in r["features"] if "playertickevent" in f["feature_id"]]
+          assert tick, "tick feature missing from report"
+          print("tick feature status:", tick[0]["status"])
+          if tick[0]["status"] != "ported":
+              for e in r["errors"]:
+                  if "tickevent" in e.get("feature", ""):
+                      print("LLM error:", e.get("error_type"),
+                            "|", str(e.get("message"))[:300])
+              sys.exit(1)
+          print("LLM smoke: NVIDIA NIM generated the tick hook for real")
+          PY
 
   xtask-mapping-gate:
     runs-on: ubuntu-latest

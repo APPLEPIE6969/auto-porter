@@ -10,11 +10,17 @@ ctl_path        = "~/.horizon/horizon-ctl"
 port_pack_path  = "~/.cargo/bin/horizon-port-pack"
 
 [llm]
-provider     = "openrouter"                    # or "anthropic", "openai", "local"
-model        = "thinkingmachines/inkling-small:free"   # OpenRouter model id; swap for claude-sonnet-5-5 etc.
-max_retries  = 3
+provider     = "openrouter"                    # "anthropic", "openai", "nvidia"
+                                               # NOTE: OpenRouter gates `thinkingmachines/inkling-small:free`
+                                               # behind registered "agentic harnesses" (HTTP 403) — for a
+                                               # working free path use:  --llm-provider nvidia
+model        = "thinkingmachines/inkling-small:free"   # nvidia example: "minimaxai/minimax-m3.1-flash"
+max_retries  = 3                               # nvidia always uses the documented ceiling: 100 attempts/request
+retry_delay_ms = 1000                          # pause between attempts (rate-limit polls)
 timeout_secs = 60
 temperature  = 0.1
+reasoning_effort = "high"                      # max documented reasoning effort (NVIDIA NIM)
+# base_url   = "http://127.0.0.1:8000/v1/chat/completions"   # self-hosted NIM / gateway override
 
 [parity]
 java_server_dir = "tests/parity/java-oracle/"  # filled by fetch_server.py; never committed

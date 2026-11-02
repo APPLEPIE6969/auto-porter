@@ -44,6 +44,37 @@ pub struct LlmCfg {
     pub max_retries: u32,
     pub timeout_secs: u64,
     pub temperature: f64,
+    /// Reasoning effort sent to providers that support the OpenAI-style
+    /// field (e.g. NVIDIA NIM). "high" is the documented maximum.
+    pub reasoning_effort: String,
+    /// Pause between retry attempts (rate-limit friendliness; NVIDIA's free
+    /// tier 429s aggressively, so its 100-attempt budget polls every second).
+    pub retry_delay_ms: u64,
+    /// Endpoint override (self-hosted NIM, local gateways, tests). `None`
+    /// uses the provider's documented URL.
+    pub base_url: Option<String>,
+}
+
+impl LlmCfg {
+    /// Total attempts per LLM request (initial call + retries).
+    ///
+    /// NVIDIA's free NIM tier rate-limits hard; the provider is configured
+    /// for up to 100 attempts per request (the documented ceiling). Every
+    /// other provider keeps `max_retries + 1`.
+    pub fn effective_max_attempts(&self) -> u32 {
+        if self.provider == "nvidia" {
+            100
+        } else {
+            self.max_retries + 1
+        }
+    }
+
+    /// Client errors that will never heal by retrying (auth, bad model id,
+    /// malformed request). Everything else — 408/429/5xx, transport errors,
+    /// empty bodies — is treated as retryable.
+    pub fn is_fatal_status(code: u16) -> bool {
+        matches!(code, 400..=407 | 409..=428 | 430..=499)
+    }
 }
 
 impl Default for LlmCfg {
@@ -54,6 +85,9 @@ impl Default for LlmCfg {
             max_retries: 3,
             timeout_secs: 60,
             temperature: 0.1,
+            reasoning_effort: "high".to_string(),
+            retry_delay_ms: 1000,
+            base_url: None,
         }
     }
 }

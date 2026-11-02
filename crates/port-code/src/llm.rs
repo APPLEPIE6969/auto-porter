@@ -3,10 +3,12 @@
 //! Provider-configurable; the model name comes from porter.toml, never from
 //! code. Missing credentials are `LlmUnavailable`, a real 60 s timeout is
 //! `LlmTimeout` — the two are deliberately distinct. Providers: `anthropic`,
-//! `openai`, and `openrouter` (OpenAI-compatible; the key is read from
-//! `OPENROUTER_API_KEY`, model ids look like `vendor/model:variant`).
+//! `openai`, `openrouter`, and `nvidia` (OpenAI-compatible; the key is read
+//! from the provider's documented env var, model ids look like
+//! `vendor/model:variant`). `base_url` overrides the endpoint for
+//! self-hosted gateways and tests.
 
-use shared::config::PorterConfig;
+use shared::config::{LlmCfg, PorterConfig};
 use shared::error::{ErrorType, Phase, PortError};
 use std::time::Duration;
 
@@ -76,7 +78,12 @@ pub enum LlmOutcome {
     Code(String),
     Unavailable(PortError),
     Timeout(PortError),
+    /// Retryable failure: 408/429/5xx, transport errors, empty/undecodable
+    /// bodies. The caller may re-send within the attempt budget.
     Failed(PortError),
+    /// Non-retryable failure (auth 401/403, unknown model 404, malformed
+    /// request 400/422). Retrying cannot heal it — fail immediately.
+    Fatal(PortError),
 }
 
 #[allow(clippy::result_large_err)]
@@ -118,17 +125,20 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 }),
             )
         }
-        "openai" | "openrouter" => {
-            let (env_var, base_url) = if cfg.llm.provider == "openrouter" {
-                (
+        "openai" | "openrouter" | "nvidia" => {
+            let (env_var, default_url) = match cfg.llm.provider.as_str() {
+                "openrouter" => (
                     "OPENROUTER_API_KEY",
                     "https://openrouter.ai/api/v1/chat/completions",
-                )
-            } else {
-                (
+                ),
+                "nvidia" => (
+                    "NVIDIA_API_KEY",
+                    "https://integrate.api.nvidia.com/v1/chat/completions",
+                ),
+                _ => (
                     "OPENAI_API_KEY",
                     "https://api.openai.com/v1/chat/completions",
-                )
+                ),
             };
             let Some(key) = std::env::var(env_var).ok().filter(|k| !k.is_empty()) else {
                 return LlmOutcome::Unavailable(
@@ -151,16 +161,31 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 ));
                 headers.push(("x-title".to_string(), "auto-porter".to_string()));
             }
-            (
-                base_url.to_string(),
-                headers,
-                serde_json::json!({
-                    "model": cfg.llm.model,
-                    "max_tokens": 2048,
-                    "temperature": cfg.llm.temperature,
-                    "messages": [{"role": "user", "content": prompt}]
-                }),
-            )
+            // NVIDIA NIM hosts long-context reasoning models; the generous
+            // token budget matches their documented chat-completions example.
+            let max_tokens = if cfg.llm.provider == "nvidia" {
+                16384
+            } else {
+                2048
+            };
+            let mut body = serde_json::json!({
+                "model": cfg.llm.model,
+                "max_tokens": max_tokens,
+                "temperature": cfg.llm.temperature,
+                "messages": [{"role": "user", "content": prompt}]
+            });
+            if cfg.llm.provider == "nvidia" {
+                // Max documented reasoning effort (config override allowed).
+                body["reasoning_effort"] =
+                    serde_json::Value::String(cfg.llm.reasoning_effort.clone());
+                body["stream"] = serde_json::Value::Bool(false);
+            }
+            let url = cfg
+                .llm
+                .base_url
+                .clone()
+                .unwrap_or_else(|| default_url.to_string());
+            (url, headers, body)
         }
         other => {
             return LlmOutcome::Unavailable(PortError::new(
@@ -203,16 +228,21 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 format!("cannot decode LLM response: {e}"),
             )),
         },
-        Err(ureq::Error::Status(_code, resp)) => {
+        Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            LlmOutcome::Failed(PortError::new(
+            let err = PortError::new(
                 Phase::PortCode,
                 ErrorType::LlmFailed,
                 format!(
                     "LLM returned an error status; body: {}",
                     truncate(&body, 400)
                 ),
-            ))
+            );
+            if LlmCfg::is_fatal_status(code) {
+                LlmOutcome::Fatal(err)
+            } else {
+                LlmOutcome::Failed(err)
+            }
         }
         Err(ureq::Error::Transport(t)) => {
             let msg = t.to_string();
@@ -245,7 +275,7 @@ fn extract_text(json: &serde_json::Value, provider: &str) -> Option<String> {
             .and_then(|b| b.get("text"))
             .and_then(|t| t.as_str())
             .map(|s| s.to_string()),
-        "openai" | "openrouter" => json
+        "openai" | "openrouter" | "nvidia" => json
             .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())
