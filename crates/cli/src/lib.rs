@@ -74,7 +74,7 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
 
     // ---- Phase 2: Classify
     let catalog = HookCatalog::load_or_snapshot(opts.hooks_json.as_deref())?;
-    let classified = classify::classify(mod_ir, &catalog);
+    let mut classified = classify::classify(mod_ir, &catalog);
     if opts.verbose {
         eprintln!(
             "[classify] tiers {:?}, {} gap(s), unresolved hooks: {:?}",
@@ -223,6 +223,33 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
 
     // ---- tests directory (generated parity + in-game scenarios)
     if cfg.output.include_tests && !opts.data_only {
+        // Tier A scenario generation (spec §6.2): harvest the mod's carried
+        // data and generate place-block parity + in-game content steps +
+        // craft recipes (runner-gap). Executable verbs only — a scenario
+        // the runners would count as passing without checking is a lie.
+        let tier_a = port_code::scenarios::harvest(jar, &mod_ir.data_files);
+        if opts.verbose {
+            eprintln!(
+                "[scenarios] {} block(s), {} craft recipe(s), {} loot table(s)",
+                tier_a.blocks.len(),
+                tier_a.recipes.len(),
+                tier_a.loot_tables
+            );
+        }
+        {
+            for f in classified
+                .plan
+                .features
+                .iter_mut()
+                .filter(|f| f.kind == FeatureKind::DataOnly)
+            {
+                f.parity_tests.extend(port_code::scenarios::parity_specs(
+                    &mod_ir.metadata.id,
+                    &tier_a,
+                ));
+            }
+        }
+
         let tests_dir = out_dir.join(format!("{}-tests", mod_ir.metadata.id));
         let mut wrote = false;
         for feature in &classified.plan.features {
@@ -235,17 +262,21 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
                 }
             }
         }
+        // craft scenarios: complete but not executable by the parity runner
+        // (no craft verb on either harness) — parked outside its glob
+        for spec in port_code::scenarios::craft_specs(&mod_ir.metadata.id, &tier_a) {
+            let p = tests_dir
+                .join("parity-manual")
+                .join(format!("{}.yaml", spec.name));
+            if std::fs::create_dir_all(p.parent().unwrap()).is_ok() {
+                let _ = std::fs::write(&p, &spec.scenario_yaml);
+            }
+        }
         let smoke = tests_dir
             .join("in-game")
             .join(format!("{}.yaml", mod_ir.metadata.id));
         if std::fs::create_dir_all(smoke.parent().unwrap()).is_ok() {
-            let yaml = format!(
-                "# in-game smoke (consumed by tests/in-game/run.py, NOT by horizon-ctl)\n\
-                 steps:\n\
-                 \x20 - launch: {{ world: {mod_id}_smoke, seed: 42, creative: false }}\n\
-                 \x20 - assert_ready: {{}}\n",
-                mod_id = mod_ir.metadata.id
-            );
+            let yaml = port_code::scenarios::smoke_yaml(&mod_ir.metadata.id, &tier_a);
             let _ = std::fs::write(&smoke, yaml);
             wrote = true;
         }

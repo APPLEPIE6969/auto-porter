@@ -176,17 +176,24 @@ fn parse_parity(json: &serde_json::Value) -> ParityResult {
         })
         .unwrap_or_default();
     let failed = s("scenarios_failed");
+    let env_unavailable = json
+        .get("environment")
+        .and_then(|e| e.get("horizon_unavailable"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
     ParityResult {
-        status: if failed > 0 {
-            CheckStatus::Fail
-        } else {
-            CheckStatus::Pass
+        // an environment that cannot run the layer is a skip with a reason,
+        // never a pass and never a fail (spec §6.2 honesty)
+        status: match (&env_unavailable, failed) {
+            (Some(_), _) => CheckStatus::Skipped,
+            (None, f) if f > 0 => CheckStatus::Fail,
+            (None, _) => CheckStatus::Pass,
         },
         scenarios_run: s("scenarios_run"),
         scenarios_passed: s("scenarios_passed"),
         scenarios_failed: failed,
         failures,
-        note: None,
+        note: env_unavailable,
     }
 }
 
@@ -265,17 +272,24 @@ pub fn run_in_game(
                         .get("steps_failed")
                         .and_then(|x| x.as_u64())
                         .unwrap_or(0);
+                    let env_unavailable = json
+                        .get("environment")
+                        .and_then(|e| e.get("horizon_unavailable"))
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string());
                     return (
                         InGameResult {
-                            status: if failed > 0 {
-                                CheckStatus::Fail
-                            } else {
-                                CheckStatus::Pass
+                            // an environment that cannot run the layer is a
+                            // skip with a reason — never a pass or a fail
+                            status: match (&env_unavailable, failed) {
+                                (Some(_), _) => CheckStatus::Skipped,
+                                (None, f) if f > 0 => CheckStatus::Fail,
+                                (None, _) => CheckStatus::Pass,
                             },
                             steps_run: s("steps_run"),
                             steps_passed: s("steps_passed"),
                             screenshot_ssim: json.get("screenshot_ssim").and_then(|x| x.as_f64()),
-                            note: None,
+                            note: env_unavailable,
                         },
                         errors,
                     );

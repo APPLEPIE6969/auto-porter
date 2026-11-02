@@ -15,6 +15,10 @@ def sh(cmd, timeout=None):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
+def horizon_available(ctl):
+    """Missing horizon-ctl must be a reported skip, never a crash."""
+    return bool(ctl) and os.path.isfile(ctl) and os.access(ctl, os.X_OK)
+
 def horizon_state(ctl, timeout):
     """One horizon-ctl state snapshot: blocks + inventory as comparable JSON."""
     rc, out, err = sh([ctl, "state"], timeout=timeout)
@@ -112,7 +116,16 @@ def main():
 
     files = sorted(glob.glob(os.path.join(args.scenarios, "*.yaml")))
     files = [f for i, f in enumerate(files) if i % args.total_shards == args.shard]
-    results = {"scenarios_run": 0, "scenarios_passed": 0, "scenarios_failed": 0, "failures": []}
+    results = {"scenarios_run": 0, "scenarios_passed": 0, "scenarios_failed": 0,
+               "scenarios_skipped": 0, "failures": []}
+
+    ctl_available = horizon_available(args.horizon_ctl)
+    if not ctl_available:
+        results["environment"] = {
+            "horizon_unavailable":
+                f"horizon-ctl not found or not executable: {args.horizon_ctl!r} "
+                "(build Horizon at the pinned revision first)"
+        }
 
     for path in files:
         with open(path) as f:
@@ -121,6 +134,17 @@ def main():
         results["scenarios_run"] += 1
         if args.verbose:
             print(f"[parity] {name}")
+
+        if not ctl_available:
+            # honest skip: recorded, counted as skipped — never a pass
+            results["scenarios_skipped"] += 1
+            results["failures"].append({
+                "scenario": name,
+                "expected": {"horizon": "available"},
+                "actual": {"horizon": "unavailable"},
+                "diagnosis": results["environment"]["horizon_unavailable"],
+            })
+            continue
 
         horizon = run_horizon_side(args.horizon_ctl, scenario, args.timeout)
         java = run_java_side(args.java_dir, scenario, args.timeout)

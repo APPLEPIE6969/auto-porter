@@ -2,6 +2,7 @@
 //! (spec §5). Output: a `.hnmod` zip (horizon-native.json + mixins/<id>/…).
 
 pub mod llm;
+pub mod scenarios;
 
 use shared::catalog::HookCatalog;
 use shared::config::PorterConfig;

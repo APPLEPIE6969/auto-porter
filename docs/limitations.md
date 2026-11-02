@@ -92,6 +92,34 @@ human-design and Tier D stays report-only regardless of the provider.
 
 ## 5. Parity & in-game layers
 
+### 5.1 Scenario generation (spec §6.2, Tier A)
+
+`port` auto-generates the Tier A scenarios from the mod's own carried data
+(`crates/port-code/src/scenarios.rs`): **place-block** parity scenarios
+(blockstates-derived ids, `_bottom` halves preferred, place → break →
+`broken_blocks`), **in-game smoke** content steps (`setblock` →
+`assert_block` → `break` → `assert_block` air → `inventory` contains the
+loot drop, plus `give` → `inventory` for recipe results), and **craft
+recipe** scenarios in `-tests/parity-manual/`. Drops are asserted only when
+the block's loot table is a single unconditional `minecraft:item` pool
+(vanilla `survives_explosion`/`explosion_decay`/`set_count`/`apply_bonus`
+boilerplate tolerated; silk-touch dual paths are not asserted).
+
+Two runner gaps are documented rather than faked:
+
+- **crafting** needs player-model actions: the console-only Java oracle
+  cannot craft and horizon-ctl has no craft command (§0.8), so craft
+  scenarios are complete YAML parked outside the parity runner's glob until
+  both harnesses gain a craft verb — they are never counted as passing,
+- **container/mob loot** cannot be probed (neither harness can attach a loot
+  table to a chest); carried loot tables are counted in the smoke header.
+
+Generated scenarios only contain verbs the runners execute today — a
+scenario the runner would count as passing without checking anything would
+be a lie.
+
+### 5.2 Environment handling
+
 `tests/parity/run.py` and `tests/in-game/run.py` are real drivers (YAML
 scenarios, `horizon-ctl` subprocess integration, minimal RCON client for the
 Java oracle, advisory SSIM), but they need:

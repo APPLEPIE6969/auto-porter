@@ -44,14 +44,33 @@ def main():
     args = ap.parse_args()
 
     ctl = args.horizon_ctl
-    results = {"steps_run": 0, "steps_passed": 0, "steps_failed": 0, "notes": []}
+    results = {"steps_run": 0, "steps_passed": 0, "steps_failed": 0,
+               "steps_skipped": 0, "notes": []}
     ok = True
+
+    ctl_available = bool(ctl) and os.path.isfile(ctl) and os.access(ctl, os.X_OK)
+    if not ctl_available:
+        results["environment"] = {
+            "horizon_unavailable":
+                f"horizon-ctl not found or not executable: {ctl!r} "
+                "(build Horizon at the pinned revision first)"
+        }
 
     for path in sorted(glob.glob(os.path.join(args.scenarios, "*.yaml"))):
         with open(path) as f:
             scenario = yaml.safe_load(f)
         if args.verbose:
             print(f"[in-game] {path}")
+        if not ctl_available:
+            # honest skip: every step of every scenario is counted and
+            # skipped with the reason — never a pass, never a crash
+            for step in scenario.get("steps", []):
+                for name in step:
+                    results["steps_run"] += 1
+                    results["steps_skipped"] += 1
+                    results["notes"].append(
+                        f"skipped {name}: {results['environment']['horizon_unavailable']}")
+            continue
         for step in scenario.get("steps", []):
             for name, payload in step.items():
                 results["steps_run"] += 1
@@ -76,6 +95,15 @@ def main():
                 elif name == "break":
                     x, y, z = payload["pos"]
                     rc, out, err = sh([ctl, "break", str(x), str(y), str(z)])
+                    passed = rc == 0
+                elif name == "setblock":
+                    # same horizon-ctl surface the parity runner uses
+                    x, y, z = payload["pos"]
+                    rc, out, err = sh([ctl, "setblock", str(x), str(y), str(z), payload["id"]])
+                    passed = rc == 0
+                elif name == "give":
+                    # same horizon-ctl surface the parity runner uses
+                    rc, out, err = sh([ctl, "give", payload["id"], str(payload.get("count", 1))])
                     passed = rc == 0
                 elif name == "assert_block":
                     x, y, z = payload["pos"]
