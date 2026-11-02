@@ -17,7 +17,7 @@ provider     = "openrouter"                    # "anthropic", "openai", "nvidia"
 model        = "thinkingmachines/inkling-small:free"   # nvidia example: "minimaxai/minimax-m3.1-flash"
 max_retries  = 3                               # nvidia always uses the documented ceiling: 100 attempts/request
 retry_delay_ms = 1000                          # pause between attempts (rate-limit polls)
-timeout_secs = 60
+timeout_secs = 180   # deep reasoning (effort=high) needs headroom: 60s timed out 3/4 attempts in CI
 temperature  = 0.1
 reasoning_effort = "high"                      # max documented reasoning effort (NVIDIA NIM)
 # base_url   = "http://127.0.0.1:8000/v1/chat/completions"   # self-hosted NIM / gateway override
