@@ -1,5 +1,5 @@
 // Template: block_place_hook.rs
-// Horizon hook: place_block (contract: cancel). Maps BlockEvent.EntityPlaceEvent /
+// Horizon hook: place_block (contract: listen). Maps BlockEvent.EntityPlaceEvent /
 // UseBlockCallback (place check). Signature reconciled against the pinned
 // native-hooks.json; the launcher-style build is the compile gate.
 pub struct {{STRUCT_NAME}};

@@ -88,9 +88,7 @@
         "id": "torchtools:event-livinghurtevent-onhurt",
         "java_concept": "LivingHurtEvent / LivingDamageEvent(/$Pre) / LivingIncomingDamageEvent | ServerLivingEntityEvents.ALLOW_DAMAGE",
         "kind": "entity_hurt",
-        "notes": [
-          "hook `living_incoming_damage` is a proposed name (not yet confirmed against the pinned native-hooks.json)"
-        ],
+        "notes": [],
         "parity_tests": [
           {
             "name": "torchtools_event_livinghurtevent_onhurt_parity",
@@ -135,13 +133,12 @@
         "data_files": [],
         "hook": {
           "hook_version": 1,
-          "name": "hud_render"
+          "name": "gui_layer_post"
         },
         "id": "torchtools:struct-shader-overhaul--rendertype--postchain--shaderinstance--gamerenderer-over",
         "java_concept": "Renderer/shader overhaul (RenderType, PostChain, ShaderInstance, GameRenderer overrides)",
         "kind": "renderer",
         "notes": [
-          "hook `hud_render` is a proposed name (re-check against the pinned native-hooks.json)",
           "Tier D: report-only, no Horizon equivalent"
         ],
         "parity_tests": [],

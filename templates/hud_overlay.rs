@@ -1,5 +1,5 @@
 // Template: hud_overlay.rs
-// Horizon hook: hud_render (client, contract: listen). Maps
+// Horizon hook: gui_layer_post (client, contract: listen). Maps
 // RegisterGuiLayersEvent / RenderGuiLayerEvent (older: RenderGuiOverlayEvent)
 // and HudRenderCallback.
 pub struct {{STRUCT_NAME}};

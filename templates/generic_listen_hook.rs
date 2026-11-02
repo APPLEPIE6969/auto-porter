@@ -1,6 +1,6 @@
 // Template: generic_listen_hook.rs
 // Contracts: listen / cancel for the remaining single-entity hooks
-// (living_death, entity_interact, item_pickup, item_drop).
+// (player_died, interact_entity, item_picked_up, item_dropped).
 pub struct {{STRUCT_NAME}};
 
 impl horizon_client::mod_api::Hooks for {{STRUCT_NAME}} {

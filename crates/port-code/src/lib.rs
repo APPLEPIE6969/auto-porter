@@ -296,19 +296,19 @@ fn llm_fallback(
         .get(&hook.name)
         .map(|d| {
             format!(
-                "hook: {}\ncontract: {}\nhook_version: {}\nneoforge: {}\nside: {}",
+                "hook: {}\ncontract: {}\nhook_version: {}\ntarget: {}\nneoforge: {}\nside: {}",
                 d.name,
                 d.contract,
                 d.hook_version,
+                d.target.clone().unwrap_or_default(),
                 d.neoforge.clone().unwrap_or_default(),
                 d.side.clone().unwrap_or_default()
             )
         })
         .unwrap_or_default();
-    let helpers = catalog
-        .get(&hook.name)
-        .map(|d| d.host_helpers.join(", "))
-        .unwrap_or_default();
+    // The real catalog carries one global `helpers` list, not per-hook
+    // host_helpers — give the model the full registry so it can pick.
+    let helpers = catalog.helper_names().join(", ");
     let examples = load_template("mixin_head.rs").unwrap_or_default();
 
     let max_attempts = cfg.llm.effective_max_attempts();

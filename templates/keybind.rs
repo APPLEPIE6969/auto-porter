@@ -1,5 +1,5 @@
 // Template: keybind.rs
-// Horizon hook: register_keybind (client). Maps KeyMapping registration /
+// Horizon hook: key (client). Maps KeyMapping registration /
 // KeyBindingHelper.registerKeyBinding. Fires through the keybind press hook.
 pub struct {{STRUCT_NAME}};
 

@@ -1,5 +1,5 @@
 // Template: entity_spawn.rs
-// Horizon hook: entity_join_level (contract: listen). Maps
+// Horizon hook: entity_join_level (contract: cancel). Maps
 // EntityJoinLevelEvent (was EntityJoinWorldEvent) /
 // ServerEntityEvents.ENTITY_LOAD.
 pub struct {{STRUCT_NAME}};

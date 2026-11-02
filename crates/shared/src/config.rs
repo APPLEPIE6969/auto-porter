@@ -15,7 +15,7 @@ pub struct HorizonCfg {
     pub mixins_revision: String,
     /// NATIVE_HOOKS_API at the pinned revision; port-code fails on mismatch.
     pub hooks_api: u32,
-    /// Path to native-hooks.json (the real one, or the seed catalog offline).
+    /// Path to native-hooks.json (overrides the committed snapshot at the pinned revision).
     pub hooks_json: String,
     pub client_path: String,
     pub ctl_path: String,

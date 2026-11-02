@@ -1,7 +1,7 @@
 // Template: item_use_hook.rs
-// Horizon hooks: right_click_block / right_click_item (contract: replace).
+// Horizon hooks: right_click_block / use_item (contract: cancel).
 // Maps PlayerInteractEvent.RightClickBlock/RightClickItem, UseBlockCallback,
-// UseItemCallback. `use_item_on` exists on the Horizon side (issue #5638).
+// UseItemCallback.
 pub struct {{STRUCT_NAME}};
 
 impl horizon_client::mod_api::Hooks for {{STRUCT_NAME}} {

@@ -15,6 +15,9 @@ env:
 
 jobs:
   sweep:
+    # `full_verify` needs a self-hosted `horizon` runner; guard on the repo
+    # variable as well so an accidental workflow_dispatch cannot queue forever.
+    if: ${{ !inputs.full_verify || vars.HORIZON_SELFHOSTED != '' }}
     runs-on: ${{ inputs.full_verify && fromJSON('["self-hosted","horizon"]') || 'ubuntu-latest' }}
     timeout-minutes: 360
     steps:

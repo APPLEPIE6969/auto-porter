@@ -32,7 +32,7 @@ pub fn analyze(
     hooks_json: Option<&Path>,
 ) -> Result<ClassifyOutput, String> {
     let decompiled = decompose::decompose(jar)?;
-    let catalog = HookCatalog::load_or_seed(hooks_json)?;
+    let catalog = HookCatalog::load_or_snapshot(hooks_json)?;
     let classified = classify::classify(&decompiled.mod_ir, &catalog);
 
     std::fs::create_dir_all(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
@@ -73,7 +73,7 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
     }
 
     // ---- Phase 2: Classify
-    let catalog = HookCatalog::load_or_seed(opts.hooks_json.as_deref())?;
+    let catalog = HookCatalog::load_or_snapshot(opts.hooks_json.as_deref())?;
     let classified = classify::classify(mod_ir, &catalog);
     if opts.verbose {
         eprintln!(
@@ -461,7 +461,7 @@ pub fn verify_dir(
     do_in_game: bool,
     verbose: bool,
 ) -> Result<VerificationReport, String> {
-    let catalog = HookCatalog::load_or_seed(None).ok();
+    let catalog = HookCatalog::load_or_snapshot(None).ok();
 
     // find the artifacts in the dir
     let mut hmod_path = None;

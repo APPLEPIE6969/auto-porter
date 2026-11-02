@@ -1,20 +1,17 @@
 # auto-porter configuration (spec §11, plus the local additions documented in docs/limitations.md)
 
 [horizon]
-revision        = "0000000000000000000000000000000000000000"   # PLACEHOLDER: replace with the full 40-hex Horizon commit you pin
-mixins_revision = "0000000000000000000000000000000000000000"   # PLACEHOLDER: full 40-hex horizon-mixins commit at that revision
-hooks_api       = 2                                            # set from NATIVE_HOOKS_API at the pinned revision; the build fails if it differs
-hooks_json      = "hooks/native-hooks.seed.json"               # replace with native-hooks.json from the pinned Horizon revision
+revision        = "6beacfe91a0074a783261d10383b7c8a77cb4cd1"   # horizon-rust/horizon main, 2026-11-02
+mixins_revision = "ddd9700b21997c95d95ac6ee5ecafe3830cf622a"   # horizon-rust/horizon-mixins main, 2026-11-01
+hooks_api       = 359                                          # NATIVE_HOOKS_API at that revision (crates/horizon-client/src/game/native_hooks.rs); the build fails if it differs
+hooks_json      = "hooks/native-hooks.json"                    # committed snapshot of native-hooks.json at the pinned revision
 client_path     = "~/.horizon/horizon-client"
 ctl_path        = "~/.horizon/horizon-ctl"
 port_pack_path  = "~/.cargo/bin/horizon-port-pack"
 
 [llm]
-provider     = "openrouter"                    # "anthropic", "openai", "nvidia"
-                                               # NOTE: OpenRouter gates `thinkingmachines/inkling-small:free`
-                                               # behind registered "agentic harnesses" (HTTP 403) — for a
-                                               # working free path use:  --llm-provider nvidia
-model        = "thinkingmachines/inkling-small:free"   # nvidia example: "minimaxai/minimax-m3.1-flash"
+provider     = "nvidia"                       # "anthropic", "openai"
+model        = "minimaxai/minimax-m3.1-flash"  # NVIDIA NIM reasoning model
 max_retries  = 3                               # nvidia always uses the documented ceiling: 100 attempts/request
 retry_delay_ms = 1000                          # pause between attempts (rate-limit polls)
 timeout_secs = 180   # deep reasoning (effort=high) needs headroom: 60s timed out 3/4 attempts in CI

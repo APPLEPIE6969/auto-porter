@@ -5,24 +5,29 @@ The pipeline **never fails silently**: everything below is visible in the
 document records what is real in this repository versus what is deferred until
 Horizon-side tooling is available.
 
-## 1. Hook catalog: seed until the pinned `native-hooks.json`
+## 1. Hook catalog: committed snapshot at the pinned revision (was: seed)
 
-`hooks/native-hooks.seed.json` is a **seed**, built from the Horizon docs
-(`docs/native-hooks-neoforge.md` confirmed names + PR #3964/#6216/#5638/#6452),
-not the real `native-hooks.json`. Rows carry `confirmed: false` when the name
-is only *proposed* (`right_click_item`, `living_incoming_damage`, ...).
+`hooks/native-hooks.json` is a **snapshot** of `horizon-rust/horizon`'s
+`native-hooks.json` at the pinned revision (386 hooks, NATIVE_HOOKS_API 359,
+read from `crates/horizon-client/src/game/native_hooks.rs` at that commit).
+The seed catalog that preceded it is gone: every hook name the mapping table
+references is now resolved against the real file, and the
+`confirmed: false` "proposed name" concept no longer exists.
 
-Replace it before real use:
+Re-fetching when the pin moves:
 
-```toml
-[horizon]
-hooks_json = "/path/to/native-hooks.json"   # at the pinned revision
-hooks_api  = <NATIVE_HOOKS_API there>
+```bash
+# 1. pick the new commit, read NATIVE_HOOKS_API from
+#    crates/horizon-client/src/game/native_hooks.rs at that commit
+# 2. fetch native-hooks.json at that commit and re-annotate it
+#    (native_hooks_api + source keys), commit as hooks/native-hooks.json
+# 3. update porter.toml revision / hooks_api, re-run
+cargo run -p xtask -- feature-mapping
 ```
 
-`cargo run -p xtask -- feature-mapping --hooks-json <real>` fails the build if
-a mapping-table name is missing from the real catalog — that is the spec's
-resolution gate, and demoting a feature to Tier D + GapReport is what happens
+`cargo run -p xtask -- feature-mapping` fails the build if a mapping-table
+name is missing from the catalog — that is the spec's resolution gate, and
+demoting a feature to Tier D + GapReport is what happens
 at classify time when a name is absent.
 
 ## 2. Data carry: `built-in-fallback` carrier
@@ -52,16 +57,18 @@ horizon-client/mods -p horizon-client`).
 Related honesty flag: generated bundles carry `#![deny(warnings)]` and pass the
 static API lint (no `unsafe`, only `mod_api`/`Host` imports), but the lint is
 *not* a compile. `verify --static` issues a `manifest_placeholder_sha` warning
-while the pinned revision is the all-zero placeholder.
+only while the pinned revision is the all-zero placeholder (porter.toml now
+pins the real Horizon commit, so normal runs are warning-free).
 
 ## 4. LLM fallback
 
 Template-first generation needs no network. The fallback (spec §10) is wired
-for `anthropic`, `openai`, and `openrouter` providers (OpenRouter is
-OpenAI-compatible: `OPENROUTER_API_KEY`, model ids like
-`thinkingmachines/inkling-small:free`, request goes to
-`https://openrouter.ai/api/v1/chat/completions` with the standard attribution
-headers), with the §10 prompt, `porter.toml` timeout/retries, and **distinct**
+for `anthropic`, `openai`, and `nvidia` providers (NVIDIA NIM is
+OpenAI-compatible: `NVIDIA_API_KEY`, request goes to
+`https://integrate.api.nvidia.com/v1/chat/completions`, `max_tokens` 16384,
+`reasoning_effort: high` — the maximum documented effort — and retryable
+failures get up to 100 attempts per request, while auth/4xx errors fail
+fast), with the §10 prompt, `porter.toml` timeout/retries, and **distinct**
 failure semantics:
 
 - `LlmTimeout` — a real call that timed out,
@@ -112,5 +119,6 @@ reference set — that is the modpack-sweep's job on CI.
 - `PortReport.data_carry` records which carrier ran.
 - `VerificationReport.compile.status` is `skipped` with a reason instead of
   pretending to run without the launcher.
-- `hooks/native-hooks.seed.json` and `mixins_revision` in `porter.toml` are
-  new config surface, documented in the file itself.
+- `hooks/native-hooks.json` (the committed catalog snapshot) and
+  `mixins_revision` in `porter.toml` are new config surface, documented in
+  the file itself.

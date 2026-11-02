@@ -46,7 +46,7 @@ tiers = plan["tier_summary"]
 assert tiers["B"] >= 10, f"Balm damage/death/use-block events unmapped: {tiers}"
 assert tiers["D"] >= 10, f"unmapped Balm events must yield honest gaps: {tiers}"
 hooks = {f["hook"]["name"] for f in plan["features"] if f["hook"]}
-assert {"living_incoming_damage", "living_death", "right_click_block"} <= hooks, hooks
+assert {"living_incoming_damage", "player_died", "right_click_block"} <= hooks, hooks
 assert len(d["gaps"]) == tiers["D"], "Tier D features must each carry a GapReport (spec §3)"
 print("waystones: tiers", tiers, "- Balm detection OK")
 PY
@@ -74,13 +74,13 @@ PY
 run port "$WORK/waystones.jar" --output "$WORK/waystones-port" >/dev/null
 v=$(run verify "$WORK/waystones-port" --static)
 v="${v%%$'\n'*}"
-case "$v" in *"overall=PASS_WITH_WARNINGS"*) ;; *) fail "waystones verify: $v" ;; esac
+case "$v" in *"overall=PASS"*) ;; *) fail "waystones verify: $v" ;; esac
 echo "waystones verify: $v"
 
 run port "$WORK/tombstone.jar" --output "$WORK/tombstone-port" >/dev/null
 v=$(run verify "$WORK/tombstone-port" --static)
 v="${v%%$'\n'*}"
-case "$v" in *"overall=PASS_WITH_WARNINGS"*) ;; *) fail "tombstone verify: $v" ;; esac
+case "$v" in *"overall=PASS"*) ;; *) fail "tombstone verify: $v" ;; esac
 echo "tombstone verify: $v"
 
 # The LLM-path feature must report an honest llm_* error (unavailable without

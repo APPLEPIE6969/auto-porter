@@ -1,10 +1,10 @@
 //! LLM fallback for features no template covers (spec §10).
 //!
 //! Provider-configurable; the model name comes from porter.toml, never from
-//! code. Missing credentials are `LlmUnavailable`, a real 60 s timeout is
+//! code. Missing credentials are `LlmUnavailable`, a real timeout is
 //! `LlmTimeout` — the two are deliberately distinct. Providers: `anthropic`,
-//! `openai`, `openrouter`, and `nvidia` (OpenAI-compatible; the key is read
-//! from the provider's documented env var, model ids look like
+//! `openai`, and `nvidia` (OpenAI-compatible; the key is read from the
+//! provider's documented env var, model ids look like
 //! `vendor/model:variant`). `base_url` overrides the endpoint for
 //! self-hosted gateways and tests.
 
@@ -125,12 +125,8 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 }),
             )
         }
-        "openai" | "openrouter" | "nvidia" => {
+        "openai" | "nvidia" => {
             let (env_var, default_url) = match cfg.llm.provider.as_str() {
-                "openrouter" => (
-                    "OPENROUTER_API_KEY",
-                    "https://openrouter.ai/api/v1/chat/completions",
-                ),
                 "nvidia" => (
                     "NVIDIA_API_KEY",
                     "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -152,15 +148,7 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                     )),
                 );
             };
-            let mut headers = vec![("authorization".to_string(), format!("Bearer {key}"))];
-            if cfg.llm.provider == "openrouter" {
-                // OpenRouter attribution headers (recommended by their docs).
-                headers.push((
-                    "http-referer".to_string(),
-                    "https://github.com/APPLEPIE6969/auto-porter".to_string(),
-                ));
-                headers.push(("x-title".to_string(), "auto-porter".to_string()));
-            }
+            let headers = vec![("authorization".to_string(), format!("Bearer {key}"))];
             // NVIDIA NIM hosts long-context reasoning models; the generous
             // token budget matches their documented chat-completions example.
             let max_tokens = if cfg.llm.provider == "nvidia" {
@@ -275,7 +263,7 @@ fn extract_text(json: &serde_json::Value, provider: &str) -> Option<String> {
             .and_then(|b| b.get("text"))
             .and_then(|t| t.as_str())
             .map(|s| s.to_string()),
-        "openai" | "openrouter" | "nvidia" => json
+        "openai" | "nvidia" => json
             .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())

@@ -59,7 +59,7 @@ pub const RULES: &[MappingRule] = &[
     MappingRule {
         concept: "PlayerInteractEvent.RightClickItem | UseItemCallback",
         event_regex: "(RightClickItem|UseItemCallback)$",
-        hook: "right_click_item",
+        hook: "use_item",
         kind: FeatureKind::ItemUse,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -88,9 +88,12 @@ pub const RULES: &[MappingRule] = &[
         template: "player_hurt_hook.rs",
     },
     MappingRule {
+        // Horizon has no single death hook: `player_died` covers players,
+        // `mob_killed` covers mobs; LivingDeathEvent fires for both, and the
+        // player case is what mod code overwhelmingly reacts to.
         concept: "LivingDeathEvent | ServerLivingEntityEvents.AFTER_DEATH",
         event_regex: "(LivingDeathEvent|ServerLivingEntityEvents\\$AfterDeath)$",
-        hook: "living_death",
+        hook: "player_died",
         kind: FeatureKind::EntityDeath,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -108,7 +111,7 @@ pub const RULES: &[MappingRule] = &[
     MappingRule {
         concept: "PlayerInteractEvent.EntityInteract | UseEntityCallback",
         event_regex: "(EntityInteract|UseEntityCallback)$",
-        hook: "entity_interact",
+        hook: "interact_entity",
         kind: FeatureKind::EntityInteract,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -117,7 +120,7 @@ pub const RULES: &[MappingRule] = &[
     MappingRule {
         concept: "ItemEntityPickupEvent / PlayerEvent.ItemPickupEvent",
         event_regex: "(ItemEntityPickupEvent|ItemPickupEvent)$",
-        hook: "item_pickup",
+        hook: "item_picked_up",
         kind: FeatureKind::ItemPickup,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -126,7 +129,7 @@ pub const RULES: &[MappingRule] = &[
     MappingRule {
         concept: "ItemTossEvent",
         event_regex: "(ItemTossEvent)$",
-        hook: "item_drop",
+        hook: "item_dropped",
         kind: FeatureKind::ItemDrop,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -135,7 +138,7 @@ pub const RULES: &[MappingRule] = &[
     MappingRule {
         concept: "KeyMapping registration | KeyBindingHelper.registerKeyBinding",
         event_regex: "(RegisterKeyMappingsEvent)$",
-        hook: "register_keybind",
+        hook: "key",
         kind: FeatureKind::Keybind,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -144,7 +147,7 @@ pub const RULES: &[MappingRule] = &[
     MappingRule {
         concept: "GUI layer/overlay events | HudRenderCallback",
         event_regex: "(RegisterGuiLayersEvent|RenderGuiLayerEvent|RenderGuiOverlayEvent|HudRenderCallback|RenderLayerEvent)$",
-        hook: "hud_render",
+        hook: "gui_layer_post",
         kind: FeatureKind::Hud,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -152,21 +155,24 @@ pub const RULES: &[MappingRule] = &[
     },
     MappingRule {
         // TickEvent.PlayerTickEvent (NeoForge/Forge) and Fabric's
-        // ServerTickEvents.StartPlayerTick: the pre-tick phase.
-        // The seed catalog resolves the hook, but no template covers the
-        // pattern — this is the spec §10 LLM-fallback path.
+        // ServerTickEvents.StartPlayerTick: the pre-tick phase. The real
+        // catalog has one `player_tick` hook (no Pre/Post split), so both
+        // phases resolve to it — no template covers the pattern, this is
+        // the spec §10 LLM-fallback path.
         concept: "PlayerTickEvent (start phase) | ServerTickEvents.START_PLAYER_TICK",
         event_regex: "(PlayerTickEvent|StartPlayerTick)$",
-        hook: "player_tick_pre",
+        hook: "player_tick",
         kind: FeatureKind::Unknown,
         tier: Tier::B,
         tier_unmapped: Tier::D,
         template: "",
     },
     MappingRule {
+        // Horizon has no end-phase player-tick hook; `player_tick` is the
+        // only player tick hook, so the end phase collapses onto it too.
         concept: "PlayerTickEvent (end phase) | ServerTickEvents.END_PLAYER_TICK",
         event_regex: "(EndPlayerTick)$",
-        hook: "player_tick_post",
+        hook: "player_tick",
         kind: FeatureKind::Unknown,
         tier: Tier::B,
         tier_unmapped: Tier::D,
@@ -211,7 +217,7 @@ pub const STRUCTURAL: &[StructuralRule] = &[
     StructuralRule {
         concept: "Screen / AbstractContainerMenu",
         matcher: ClassMatch::SuperContains("/client/gui/screens/Screen|/inventory/AbstractContainerMenu|/inventory/MenuType"),
-        hook: "container_open",
+        hook: "player_container_open",
         kind: FeatureKind::Gui,
         tier: Tier::C,
         template: "menu_screen.rs",
@@ -219,7 +225,7 @@ pub const STRUCTURAL: &[StructuralRule] = &[
     StructuralRule {
         concept: "Renderer/shader overhaul (RenderType, PostChain, ShaderInstance, GameRenderer overrides)",
         matcher: ClassMatch::SuperContains("PostChain|ShaderInstance|GameRenderer|RenderTarget"),
-        hook: "hud_render",
+        hook: "gui_layer_post",
         kind: FeatureKind::Renderer,
         tier: Tier::D,
         template: "hud_overlay.rs",

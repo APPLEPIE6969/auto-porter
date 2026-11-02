@@ -94,18 +94,16 @@
         "data_files": [],
         "hook": {
           "hook_version": 1,
-          "name": "entity_interact"
+          "name": "interact_entity"
         },
         "id": "chunkcourier:event-playerinteractevent-entityinteract-onentityinteract",
         "java_concept": "PlayerInteractEvent.EntityInteract | UseEntityCallback",
         "kind": "entity_interact",
-        "notes": [
-          "hook `entity_interact` is a proposed name (not yet confirmed against the pinned native-hooks.json)"
-        ],
+        "notes": [],
         "parity_tests": [
           {
             "name": "chunkcourier_event_playerinteractevent_entityinteract_onentityinteract_parity",
-            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_playerinteractevent_entityinteract_onentityinteract_parity\ndescription: \"Parity scenario for entity_interact (B): PlayerInteractEvent$EntityInteract -> entity_interact\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_playerinteractevent_entityinteract_onentityinteract_parity\ndescription: \"Parity scenario for entity_interact (B): PlayerInteractEvent$EntityInteract -> interact_entity\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
           }
         ],
         "sources": [
@@ -113,7 +111,7 @@
         ],
         "template": "generic_listen_hook.rs",
         "tier": "B",
-        "title": "PlayerInteractEvent$EntityInteract -> entity_interact"
+        "title": "PlayerInteractEvent$EntityInteract -> interact_entity"
       },
       {
         "contract": null,
@@ -136,18 +134,16 @@
         "data_files": [],
         "hook": {
           "hook_version": 1,
-          "name": "player_tick_pre"
+          "name": "player_tick"
         },
         "id": "chunkcourier:event-tickevent-playertickevent-onplayertick",
         "java_concept": "PlayerTickEvent (start phase) | ServerTickEvents.START_PLAYER_TICK",
         "kind": "unknown",
-        "notes": [
-          "hook `player_tick_pre` is a proposed name (not yet confirmed against the pinned native-hooks.json)"
-        ],
+        "notes": [],
         "parity_tests": [
           {
             "name": "chunkcourier_event_tickevent_playertickevent_onplayertick_parity",
-            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_tickevent_playertickevent_onplayertick_parity\ndescription: \"Parity scenario for unknown (B): TickEvent$PlayerTickEvent -> player_tick_pre\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
+            "scenario_yaml": "# auto-generated from the PortPlan (spec §6.2); survival mode, real drops\nname: chunkcourier_event_tickevent_playertickevent_onplayertick_parity\ndescription: \"Parity scenario for unknown (B): TickEvent$PlayerTickEvent -> player_tick\"\nsetup:\n  world: flat\n  seed: 42\n  player: survival\nactions: []            # filled by the Phase 5 scenario generator / LLM\nexpected:\n  broken_blocks: []\n"
           }
         ],
         "sources": [
@@ -155,7 +151,7 @@
         ],
         "template": null,
         "tier": "B",
-        "title": "TickEvent$PlayerTickEvent -> player_tick_pre"
+        "title": "TickEvent$PlayerTickEvent -> player_tick"
       },
       {
         "contract": null,
@@ -185,13 +181,12 @@
         "data_files": [],
         "hook": {
           "hook_version": 1,
-          "name": "container_open"
+          "name": "player_container_open"
         },
         "id": "chunkcourier:struct-abstractcontainermenu-parcelmenu",
         "java_concept": "Screen / AbstractContainerMenu",
         "kind": "gui",
         "notes": [
-          "hook `container_open` is a proposed name (re-check against the pinned native-hooks.json)",
           "Tier C: partly automatic, human design required"
         ],
         "parity_tests": [
@@ -244,7 +239,6 @@
         "java_concept": "Custom payloads / packets | PayloadTypeRegistry + networking API",
         "kind": "networking",
         "notes": [
-          "hook `net_from_client` is a proposed name (re-check against the pinned native-hooks.json)",
           "Tier C: partly automatic, human design required"
         ],
         "parity_tests": [

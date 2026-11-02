@@ -66,7 +66,7 @@ cargo run -p xtask -- feature-mapping
 | `crates/xtask/` | generates `docs/feature-mapping.md` from `native-hooks.json` |
 | `crates/cli/` | the `auto-porter` binary (`port`, `port-pack`, `verify`, `analyze`) |
 | `templates/` | one `.rs` template per common pattern, `{{PLACEHOLDER}}` tokens |
-| `hooks/native-hooks.seed.json` | offline seed catalog — replace with the pinned `native-hooks.json` |
+| `hooks/native-hooks.json` | snapshot of Horizon's `native-hooks.json` at the pinned revision (386 hooks) |
 | `tests/fixtures/` | three fixture mod jars (Fabric mixin+callback, NeoForge events+BE+shader, pure data) + committed analyze snapshots |
 | `tests/parity/`, `tests/in-game/` | differential + horizon-ctl smoke harnesses (Python) |
 | `.github/workflows/` | `port-test.yml`, `nightly-ecosystem.yml`, `release.yml` |
@@ -90,13 +90,10 @@ What needs Horizon-side tooling (documented in
   possible for native mods),
 - parity + in-game layers (`horizon-ctl` + a licensed MC 26.3 copy on a
   self-hosted runner),
-- LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` /
-  `NVIDIA_API_KEY`; default provider `openrouter` with model
-  `thinkingmachines/inkling-small:free`). **Note:** OpenRouter gates that
-  `:free` sku behind registered "agentic harnesses" — requests with a valid
-  key get HTTP 403 `...only available on agentic harnesses...`. Use
-  `--llm-provider nvidia --llm-model minimaxai/minimax-m3.1-flash` (or another
-  model) for a working free path.
+- LLM fallback (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `NVIDIA_API_KEY`;
+  default provider `nvidia` with model `minimaxai/minimax-m3.1-flash`,
+  `reasoning_effort: high`, up to 100 attempts per request on retryable
+  failures — 429/5xx/timeout — while auth errors fail fast).
 - Retry policy: providers get `max_retries` (default 3) extra attempts on
   retryable failures (408/429/5xx/transport/empty), with `retry_delay_ms`
   between attempts. **NVIDIA NIM always gets the documented ceiling of 100
@@ -114,11 +111,13 @@ data-only ports with static verification, full Tier A/B code generation with
 `verify --static --compile` (the compile layer reports `skipped` without the
 launcher), and the xtask mapping-drift gate.
 
-The jobs that need a pinned Horizon revision (`data-port-tests` via
-`cargo install --rev`, and the parity / in-game / modpack jobs on the
-self-hosted `horizon` runner) are gated on the `HORIZON_REVISION` repository
-variable — they stay marked *skipped* until you set it (which also signals
-that a labeled runner is registered). `nightly-ecosystem.yml` runs the
+The `data-port-tests` job (builds `horizon-port-pack` at the pinned revision
+via `cargo install --rev`) runs once the `HORIZON_REVISION` repository
+variable is set — it is set, so hosted CI builds the real porter pack and
+ports the fixtures against it. The parity / in-game / modpack jobs need a
+self-hosted runner with a licensed Minecraft copy; they additionally require
+the `HORIZON_SELFHOSTED` repository variable so they cannot queue forever on
+a runner that is not registered. `nightly-ecosystem.yml` runs the
 top-100 sweep nightly on hosted runners; its full-verify mode and the status
 issue comment are likewise gated on repo variables.
 
@@ -136,19 +135,21 @@ Modrinth downloads (nothing third-party is committed — jars go to a temp dir):
 - **Corail Tombstone** (neoforge 1.21.1, 590 classes) — direct API, 112
   features: NeoForge 1.21.1's phase-split `LivingDamageEvent$Pre` maps, and
   `PlayerInteractEvent$LeftClickBlock` resolves `left_click_block` with no
-  template → the spec §10 LLM fallback. Without `OPENROUTER_API_KEY` set the
+  template → the spec §10 LLM fallback. Without `NVIDIA_API_KEY` set the
   script asserts the honest `llm_unavailable` report; with a key, generation
   runs for real.
 
-The static verify on both bundles is `PASS_WITH_WARNINGS` (only the pinned-
-revision placeholder warnings). The script also guards vanilla-model texture
+The static verify on both bundles is a full `PASS` (the pinned revision and
+catalog are real now). The script also guards vanilla-model texture
 semantics: `#var` references and `minecraft:`-namespace textures resolve at
 runtime, so they must not fail the cross-check.
 
 ## Configuration
 
 `porter.toml` (spec §11) pins the Horizon revision, `NATIVE_HOOKS_API`, tool
-paths, LLM settings, parity/in-game options. The two placeholder SHAs
-(all-zero) must be replaced with real full 40-hex commits before you rely on
-generated bundles — reports flag them with
-`horizon_revision_verified: false` until then.
+paths, LLM settings, parity/in-game options. The pins are real:
+Horizon `6beacfe91a0074a783261d10383b7c8a77cb4cd1` (main, 2026-11-02),
+`horizon-mixins` `ddd9700b21997c95d95ac6ee5ecafe3830cf622a`, and
+`NATIVE_HOOKS_API = 359` — the committed `hooks/native-hooks.json` snapshot
+carries the same revision in its `source` annotation, and the build fails if
+`hooks_api` ever drifts from the catalog.

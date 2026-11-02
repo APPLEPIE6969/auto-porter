@@ -7,7 +7,7 @@
 #   Tier A  data content (recipe, loot table, advancement) + assets
 #   Tier B  block-break + entity-interact listeners (templates),
 #           generic mixin (@Inject HEAD), root config .toml
-#   Tier B  player-tick listener -> player_tick_pre hook, NO template
+#   Tier B  player-tick listener -> player_tick hook, NO template
 #           => the LLM fallback path (porter.toml [llm])
 #   Tier C  BlockEntity subclass, AbstractContainerMenu subclass,
 #           CustomPayload networking class (templates, human design)

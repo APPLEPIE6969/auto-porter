@@ -24,10 +24,10 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// Path to native-hooks.json (overrides porter.toml hooks_json; falls back
-    /// to the in-tree seed catalog)
+    /// to the committed snapshot at the pinned revision)
     #[arg(long, global = true)]
     hooks_json: Option<PathBuf>,
-    /// LLM provider override: anthropic | openai | openrouter | nvidia
+    /// LLM provider override: anthropic | openai | nvidia
     /// (overrides porter.toml [llm].provider)
     #[arg(long, global = true)]
     llm_provider: Option<String>,

@@ -1,7 +1,7 @@
 // Template: menu_screen.rs
 // Screen / AbstractContainerMenu ports: menu slot rules plus the renderer
-// hooks; anchored on container_open (proposed name — resolve in the pinned
-// native-hooks.json before relying on it).
+// hooks; anchored on player_container_open (resolved in the pinned
+// native-hooks.json).
 pub struct {{STRUCT_NAME}};
 
 impl horizon_client::mod_api::Hooks for {{STRUCT_NAME}} {

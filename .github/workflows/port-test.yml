@@ -82,7 +82,6 @@ jobs:
     needs: build
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -112,20 +111,6 @@ jobs:
             echo "NVIDIA_API_KEY not set — LLM smoke skipped (LLM fallback stays honest)"
             exit 0
           fi
-          # Informational: show what OpenRouter answers for the default model
-          # (currently 403 "agentic harnesses" gate on the :free sku).
-          rm -rf target/llm-or
-          bin/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
-            --output target/llm-or || true
-          python3 - <<'PY'
-          import json
-          r = json.load(open("target/llm-or/chunkcourier-report.json"))
-          or_errs = [e for e in r["errors"]
-                     if str(e.get("error_type", "")).startswith("llm_")]
-          print("openrouter default-model result:",
-                or_errs[0]["error_type"] if or_errs else "no llm errors",
-                "|", (or_errs[0]["message"][:160] if or_errs else ""))
-          PY
           # The real test: NVIDIA NIM with reasoning_effort=high, up to 100
           # attempts per request. The tick hook has no template, so success
           # means the LLM fallback generated code that passed the static lint.
@@ -156,16 +141,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Regenerate the feature mapping and fail on drift
         run: |
-          cargo run -q -p xtask -- feature-mapping --hooks-json hooks/native-hooks.seed.json
+          cargo run -q -p xtask -- feature-mapping --hooks-json hooks/native-hooks.json
           git diff --exit-code docs/feature-mapping.md \
             || { echo "::error::docs/feature-mapping.md is stale (run cargo run -p xtask -- feature-mapping)"; exit 1; }
 
   parity-tests:
-    # Self-hosted runner with a licensed MC 26.3 copy (§8 intro). Setting the
-    # HORIZON_REVISION repo variable is the opt-in signal that such a runner
-    # is registered with the `horizon` label; without it these jobs are
-    # skipped so hosted CI still completes.
-    if: vars.HORIZON_REVISION != ''
+    # Self-hosted runner with a licensed MC 26.3 copy (§8 intro). Opt in with
+    # BOTH repo variables: HORIZON_REVISION (the pin) and HORIZON_SELFHOSTED
+    # (set to any non-empty value once a runner labelled `horizon` is
+    # registered) — otherwise these jobs would queue forever.
+    if: vars.HORIZON_REVISION != '' && vars.HORIZON_SELFHOSTED != '' 
     runs-on: [self-hosted, horizon]
     needs: [build, code-gen-tests]
     strategy:
@@ -194,7 +179,7 @@ jobs:
           path: tests/parity/results/
 
   in-game-tests:
-    if: vars.HORIZON_REVISION != ''
+    if: vars.HORIZON_REVISION != '' && vars.HORIZON_SELFHOSTED != '' 
     runs-on: [self-hosted, horizon]
     needs: [build, code-gen-tests]
     steps:
@@ -216,7 +201,9 @@ jobs:
           path: tests/in-game/results/
 
   modpack-sweep:
-    if: vars.HORIZON_REVISION != '' && github.event_name == 'push'
+    if: >-
+      vars.HORIZON_REVISION != '' && vars.HORIZON_SELFHOSTED != ''
+      && github.event_name == 'push'
     runs-on: [self-hosted, horizon]
     needs: [parity-tests, in-game-tests]
     steps:

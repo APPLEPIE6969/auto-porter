@@ -77,12 +77,6 @@ pub fn classify(decomposed: &DecomposedMod, catalog: &HookCatalog) -> ClassifyOu
                         hook_version: def.hook_version,
                     });
                     contract = Some(def.contract.clone());
-                    if def.confirmed == Some(false) {
-                        notes.push(format!(
-                            "hook `{}` is a proposed name (not yet confirmed against the pinned native-hooks.json)",
-                            def.name
-                        ));
-                    }
                 }
                 Err(_) => {
                     unresolved_hooks.push(hook_name.clone());
@@ -359,12 +353,6 @@ fn push_structural(
                 hook_version: def.hook_version,
             });
             contract = Some(def.contract.clone());
-            if def.confirmed == Some(false) {
-                notes.push(format!(
-                    "hook `{}` is a proposed name (re-check against the pinned native-hooks.json)",
-                    def.name
-                ));
-            }
         }
         Err(_) => {
             unresolved.push(rule.hook.to_string());
