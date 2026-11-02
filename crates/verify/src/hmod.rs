@@ -67,10 +67,14 @@ fn validate_hmod_manifest(entries: &std::collections::BTreeMap<String, Vec<u8>>,
             "manifest_schema",
             format!("horizon-mod.toml: schema {n} != 1"),
         ),
-        None => v.fail(
-            "manifest_schema",
-            "horizon-mod.toml: `schema` missing (expected 1)",
-        ),
+        None => {
+            // The real horizon-port-pack (api 0.2) omits `schema` entirely —
+            // the authoritative generator is the format, not our seed guess.
+            v.warn(
+                "manifest_schema",
+                "horizon-mod.toml has no `schema` key (horizon-port-pack 0.2 format); treating as 1",
+            );
+        }
     }
     match get("id") {
         Some(id) => {

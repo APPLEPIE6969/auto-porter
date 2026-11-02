@@ -32,14 +32,19 @@ at classify time when a name is absent.
 
 ## 2. Data carry: `built-in-fallback` carrier
 
-Spec §4 makes `horizon-port-pack` the carrier. When the binary is not
-installed (any machine without a Horizon checkout, including this one), Phase 3
-packs the jar's `assets/` + `data/` into a valid `.hmod` itself and records
-`data_carry: "built-in-fallback"` in the report. It does **not** implement the
-real upgrade/carry semantics (26.3 format rewrites, id remapping, modpack
-tiering) — that stays with `horizon-port-pack`, which the porter drives
-(`check` → `import` → `inventory` → `fetch` → `carry` → `report`) the moment
-`port_pack_path` resolves.
+Spec §4 makes `horizon-port-pack` the carrier. The porter drives the real
+single-mod flow `horizon-port-pack check <jar> <out>`: it carries the jar's
+content into `<out>/carry/` (a ready `horizon-mod.toml` + `assets/` + `data/`
+payload, with 26.3 recipe/item upgrades applied) and the porter zips that
+payload into the `.hmod`, recording `data_carry: "horizon-port-pack"`. The
+tool's `import`/`inventory`/`fetch`/`carry`/`report` chain is its *modpack*
+flow (`import` rejects single jars). When the binary is not installed, a
+clearly-labelled `built-in-fallback` carrier packs the jar's `assets/` +
+`data/` into a valid `.hmod` itself and records
+`data_carry: "built-in-fallback"`; it does **not** implement the real
+upgrade/carry semantics. One caveat inherited from the real tool: its
+`horizon-mod.toml` omits the `schema` key (api 0.2 format), so the validator
+treats a missing `schema` as a warning, not a failure.
 
 `pack.mcmeta` is deliberately not copied: it is not an allowed top-level entry
 in a `.hmod` per `docs/api/mod-files.md`.

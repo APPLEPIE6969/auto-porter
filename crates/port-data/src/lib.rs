@@ -1,7 +1,11 @@
 //! Phase 3: Port data (spec §4).
 //!
-//! Primary carrier: `horizon-port-pack` driven through the documented pipeline
-//! (`check` → `import` → `inventory` → `fetch` → `carry` → `report`).
+//! Primary carrier: `horizon-port-pack check <jar> <out>` — the real single-mod
+//! flow. It carries the jar's content into `<out>/carry/` (a ready
+//! `horizon-mod.toml` + `assets/` + `data/` payload) and writes `check.json`
+//! and `carry-report.json` next to it; the porter zips `carry/` into the
+//! `.hmod`. (`import`/`inventory`/`fetch`/`carry`/`report` are the tool's
+//! *modpack* flow — `import` rejects single jars.)
 //!
 //! When the binary is not installed (e.g. a machine without a Horizon
 //! checkout), a clearly-labelled `built-in-fallback` carrier packs the jar's
@@ -34,7 +38,12 @@ pub fn port_data(
     let pack_bin = cfg.expand(&cfg.horizon.port_pack_path);
 
     if binary_available(&pack_bin, "horizon-port-pack") {
-        match run_port_pack(jar_path, &mod_id, cfg, out_dir) {
+        let planned: Vec<String> = decomposed
+            .data_files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        match run_port_pack(jar_path, &mod_id, cfg, out_dir, &planned) {
             Ok(mut outcome) => {
                 validate_result(&mut outcome, &mod_id);
                 return outcome;
@@ -78,6 +87,7 @@ fn run_port_pack(
     mod_id: &str,
     cfg: &PorterConfig,
     out_dir: &Path,
+    planned: &[String],
 ) -> Result<DataPortOutcome, PortError> {
     let bin = {
         let p = cfg.expand(&cfg.horizon.port_pack_path);
@@ -97,77 +107,164 @@ fn run_port_pack(
         )
     })?;
 
-    let steps: [(&str, Vec<String>); 6] = [
-        ("check", vec![jar_path.display().to_string()]),
-        (
-            "import",
-            vec![jar_path.display().to_string(), work.display().to_string()],
-        ),
-        ("inventory", vec![work.display().to_string()]),
-        ("fetch", vec![work.display().to_string()]),
-        ("carry", vec![work.display().to_string()]),
-        ("report", vec![work.display().to_string()]),
-    ];
+    // Single-mod carrier: `check <jar> <out>` (the import/inventory/… chain
+    // is the modpack flow and rejects single jars).
+    let output = std::process::Command::new(&bin)
+        .arg("check")
+        .arg(jar_path)
+        .arg(&work)
+        .output()
+        .map_err(|e| {
+            PortError::new(
+                Phase::PortData,
+                ErrorType::MissingDependency,
+                format!("failed to spawn horizon-port-pack check: {e}"),
+            )
+            .with_suggestion("check that the horizon-port-pack binary is executable")
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(PortError::new(
+            Phase::PortData,
+            ErrorType::MissingDependency,
+            format!("horizon-port-pack check exited non-zero: {}", stderr.trim()),
+        )
+        .with_suggestion(
+            "run `horizon-port-pack check <jar> <out>` manually and inspect the report",
+        ));
+    }
 
-    let mut last_stdout = None;
-    for (sub, args) in &steps {
-        let status = std::process::Command::new(&bin)
-            .arg(sub)
-            .args(args)
-            .output()
-            .map_err(|e| {
-                PortError::new(
-                    Phase::PortData,
-                    ErrorType::MissingDependency,
-                    format!("failed to spawn horizon-port-pack {sub}: {e}"),
-                )
-            })?;
-        let stdout = String::from_utf8_lossy(&status.stdout).into_owned();
-        last_stdout = Some(stdout.clone());
-        if !status.status.success() {
-            let stderr = String::from_utf8_lossy(&status.stderr).into_owned();
+    // check.json: verdict, ports, skipped — the human-readable summaries go
+    // to port_pack_stdout (they are counts, not paths).
+    let mut summary = stdout.clone();
+    if let Ok(text) = std::fs::read_to_string(work.join("check.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            summary = format!(
+                "verdict: {}; {}",
+                v.get("verdict").and_then(|x| x.as_str()).unwrap_or("?"),
+                v.get("summary").and_then(|x| x.as_str()).unwrap_or("")
+            );
+        }
+    }
+
+    // The carry/ payload is the content mod: zip it with horizon-mod.toml at
+    // the archive root (docs/api/mod-files.md top-level rules).
+    let carry = work.join("carry");
+    if !carry.is_dir() {
+        return Err(PortError::new(
+            Phase::PortData,
+            ErrorType::MissingDependency,
+            format!(
+                "horizon-port-pack check produced no carry/ payload in {}",
+                work.display()
+            ),
+        ));
+    }
+    let dest = out_dir.join(format!("{mod_id}.hmod"));
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file = std::fs::File::create(&dest).map_err(|e| {
+        PortError::new(
+            Phase::PortData,
+            ErrorType::MissingDependency,
+            format!("cannot write {}: {e}", dest.display()),
+        )
+    })?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut files = Vec::new();
+    collect_files(&carry, "", &mut files);
+    if files.is_empty() {
+        return Err(PortError::new(
+            Phase::PortData,
+            ErrorType::MissingDependency,
+            "the carry/ payload is empty; refusing to write an empty .hmod",
+        ));
+    }
+    for (rel, path) in &files {
+        if zip.start_file(rel.as_str(), options).is_err() {
             return Err(PortError::new(
                 Phase::PortData,
                 ErrorType::MissingDependency,
-                format!("horizon-port-pack {sub} exited non-zero: {}", stderr.trim()),
-            )
-            .with_suggestion(
-                "run `horizon-port-pack check <jar>` manually and inspect the report",
+                format!("failed to write {rel} into the .hmod zip"),
             ));
         }
+        let mut f = std::fs::File::open(path).map_err(|e| {
+            PortError::new(
+                Phase::PortData,
+                ErrorType::MissingDependency,
+                format!("cannot read {}: {e}", path.display()),
+            )
+        })?;
+        std::io::copy(&mut f, &mut zip).map_err(|e| {
+            PortError::new(
+                Phase::PortData,
+                ErrorType::MissingDependency,
+                format!("cannot write {rel} into the .hmod zip: {e}"),
+            )
+        })?;
     }
+    if zip.finish().is_err() {
+        return Err(PortError::new(
+            Phase::PortData,
+            ErrorType::MissingDependency,
+            "failed to finalize the .hmod zip",
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&work);
 
-    // Collect the produced .hmod, if any.
-    let mut hmod: Option<PathBuf> = None;
-    for e in std::fs::read_dir(&work).into_iter().flatten().flatten() {
+    // Real carried/dropped gate: what actually landed in the .hmod vs what
+    // decompose planned. horizon-port-pack may add 26.3 upgrade files
+    // (recorded in the summary), but a planned file missing from the payload
+    // is a real silent drop.
+    let zipped: std::collections::BTreeSet<String> = files.iter().map(|(r, _)| r.clone()).collect();
+    let carried: Vec<String> = planned
+        .iter()
+        .filter(|p| zipped.contains(p.as_str()))
+        .cloned()
+        .collect();
+    let dropped: Vec<String> = planned
+        .iter()
+        .filter(|p| !zipped.contains(p.as_str()))
+        .cloned()
+        .collect();
+
+    Ok(DataPortOutcome {
+        hmod: Some(dest),
+        carrier: "horizon-port-pack".to_string(),
+        carried,
+        dropped,
+        errors: Vec::new(),
+        port_pack_stdout: Some(summary),
+    })
+}
+
+/// Collect (relative-zip-path, absolute-path) pairs for every file under
+/// `dir`, with forward-slash relative paths for the archive.
+fn collect_files(dir: &Path, prefix: &str, out: &mut Vec<(String, PathBuf)>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
         let p = e.path();
-        if p.extension().map(|x| x == "hmod").unwrap_or(false) {
-            let dest = out_dir.join(
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("{mod_id}.hmod")),
-            );
-            let dest = if dest.extension().map(|x| x == "hmod").unwrap_or(false) {
-                dest
-            } else {
-                out_dir.join(format!("{mod_id}.hmod"))
-            };
-            std::fs::create_dir_all(out_dir).ok();
-            std::fs::copy(&p, &dest).ok();
-            hmod = Some(dest);
-            break;
+        let name = e.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if p.is_dir() {
+            collect_files(&p, &rel, out);
+        } else if p.is_file() {
+            out.push((rel, p));
         }
     }
-
-    let _ = std::fs::remove_dir_all(&work);
-    Ok(DataPortOutcome {
-        hmod,
-        carrier: "horizon-port-pack".to_string(),
-        carried: Vec::new(),
-        dropped: Vec::new(),
-        errors: Vec::new(),
-        port_pack_stdout: last_stdout,
-    })
 }
 
 fn fallback_carry(jar_path: &Path, decomposed: &DecomposedMod, out_dir: &Path) -> DataPortOutcome {

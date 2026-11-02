@@ -83,10 +83,13 @@ fn full_pipeline_on_veinminer_fixture() {
     );
     assert!(out_dir.join("veinminer-tests").is_dir(), "tests emitted");
 
-    // offline environment: the fallback carrier ran and said so
-    assert_eq!(
-        ported.report.data_carry.as_deref(),
-        Some("built-in-fallback")
+    // whichever carrier is available must be recorded honestly: the real
+    // horizon-port-pack when installed (CI, dev machines with the pinned
+    // checkout), the built-in fallback otherwise
+    let carrier = ported.report.data_carry.as_deref().unwrap_or_default();
+    assert!(
+        carrier == "built-in-fallback" || carrier == "horizon-port-pack",
+        "honest carrier, got {carrier}"
     );
     // the bundle generation ran (2 ported: data + the block-break feature)
     assert_eq!(ported.report.summary.ported, 2);
