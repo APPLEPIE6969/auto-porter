@@ -229,6 +229,290 @@ fn llm_retries_through_nvidia_degraded_400s() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Serve the fixture jar bytes for the synthetic .mrpack download tests.
+fn serve_fixture_jar(
+    jar_bytes: Vec<u8>,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let served = hits.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            served.fetch_add(1, Ordering::SeqCst);
+            let req = String::from_utf8_lossy(&buf);
+            let (status, body): (&str, Vec<u8>) = if req.starts_with("GET /veinminer.jar") {
+                ("200 OK", jar_bytes.clone())
+            } else {
+                ("404 Not Found", b"not found".to_vec())
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/java-archive\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    (addr, hits)
+}
+
+fn sha1_hex_of(bytes: &[u8]) -> String {
+    use sha1::Digest;
+    sha1::Sha1::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Write an in-memory zip to a temp file with the given name.
+fn write_zip(path: &std::path::Path, entries: &[(&str, Vec<u8>)]) {
+    use std::io::Write as _;
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+    for (name, bytes) in entries {
+        zip.start_file(*name, opts).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+#[test]
+fn mrpack_manifest_mods_are_downloaded_sha1_verified_and_ported() {
+    // Spec §7: port-pack accepts a Modrinth .mrpack. Offline of the real
+    // carrier, the manifest-driven fallback must enumerate the mods the
+    // index lists, download them from the pinned URLs, verify the pinned
+    // sha1, stage the jar, and run each through the full pipeline.
+    let fixture = ws("tests/fixtures/jars/veinminer-fabric-1.0.0.jar");
+    let jar_bytes = std::fs::read(&fixture).expect("fixture jar");
+    let real_sha1 = sha1_hex_of(&jar_bytes);
+    let (addr, hits) = serve_fixture_jar(jar_bytes.clone());
+
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "gameVersion": "1.21.1",
+        "name": "e2e-pack",
+        "summary": "synthetic pack for the manifest-driven fallback test",
+        "dependencies": {"minecraft": "1.21.1", "fabric-loader": "0.16.9"},
+        "files": [
+            {
+                "path": "mods/veinminer.jar",
+                "hashes": {"sha1": real_sha1, "sha512": "not-checked-here"},
+                "env": {"client": "required", "server": "required"},
+                "fileSize": jar_bytes.len(),
+                "downloads": [format!("http://{addr}/veinminer.jar")]
+            },
+            {
+                "path": "resourcepacks/Textures.zip",
+                "hashes": {"sha1": "deadbeef"},
+                "fileSize": 4,
+                "downloads": [format!("http://{addr}/never-fetched.zip")]
+            }
+        ]
+    });
+    let tmp = std::env::temp_dir().join(format!("ap-mrpack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let pack_path = tmp.join("e2e-pack.mrpack");
+    write_zip(
+        &pack_path,
+        &[
+            ("modrinth.index.json", serde_json::to_vec(&index).unwrap()),
+            ("overrides/config/option.txt", b"enable=true\n".to_vec()),
+            (
+                "client-overrides/shaders/pack.fsh",
+                b"#version 150\n".to_vec(),
+            ),
+            (
+                "server-overrides/serverconfig.toml",
+                b"[veinminer]\non = true\n".to_vec(),
+            ),
+        ],
+    );
+
+    let cfg = PorterConfig::default();
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir.clone(),
+        verbose: false,
+        hooks_json: None,
+    };
+    let summary = auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack");
+    let made = hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    let entry = &summary["results"][0];
+    assert_eq!(entry["archive"], "e2e-pack");
+    assert_eq!(entry["format"], "mrpack");
+    let mods = entry["mods"].as_array().expect("mods listed");
+    assert_eq!(
+        mods.len(),
+        2,
+        "the code mod and the resource pack both listed"
+    );
+    let code_mod = mods
+        .iter()
+        .find(|m| m["mod"] == "mods/veinminer.jar")
+        .expect("code mod entry");
+    assert_eq!(code_mod["mod_id"], "veinminer");
+    assert_eq!(code_mod["sha1"], "verified", "pinned sha1 checked and ok");
+    // a resource pack is data for the launcher import, not a code mod — it
+    // must be recorded with its kind and never pushed through the pipeline
+    let pack_entry = mods
+        .iter()
+        .find(|m| m["mod"] == "resourcepacks/Textures.zip")
+        .expect("resource pack entry");
+    assert_eq!(pack_entry["status"], "resource-pack");
+    assert_eq!(summary["ported"], 1);
+    assert_eq!(summary["failures"], 0);
+    assert_eq!(made, 1, "only the code mod is downloaded");
+
+    // the staged jar and the pipeline artifacts land in the pack's work dir
+    assert!(out_dir.join("e2e-pack/mods/veinminer.jar").is_file());
+    assert!(out_dir.join("e2e-pack/veinminer.hmod").is_file());
+    assert!(out_dir.join("e2e-pack/veinminer-report.json").is_file());
+    // all three override roots are carried as data
+    let carried = entry["overrides_carried"].as_object().unwrap();
+    assert_eq!(carried.get("overrides"), Some(&serde_json::json!(1)));
+    assert_eq!(carried.get("client-overrides"), Some(&serde_json::json!(1)));
+    assert_eq!(carried.get("server-overrides"), Some(&serde_json::json!(1)));
+    assert!(out_dir.join("e2e-pack/config/option.txt").is_file());
+    assert!(out_dir.join("e2e-pack/shaders/pack.fsh").is_file());
+    assert!(out_dir.join("e2e-pack/serverconfig.toml").is_file());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn mrpack_sha1_mismatch_is_recorded_and_not_ported() {
+    let fixture = ws("tests/fixtures/jars/veinminer-fabric-1.0.0.jar");
+    let jar_bytes = std::fs::read(&fixture).expect("fixture jar");
+    let real_len = jar_bytes.len();
+    let (addr, hits) = serve_fixture_jar(jar_bytes);
+
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "name": "bad-hash-pack",
+        "dependencies": {"minecraft": "1.21.1", "fabric-loader": "0.16.9"},
+        "files": [{
+            "path": "mods/veinminer.jar",
+            "hashes": {"sha1": "0000000000000000000000000000000000000000"},
+            "fileSize": real_len,
+            "downloads": [format!("http://{addr}/veinminer.jar")]
+        }]
+    });
+    let tmp = std::env::temp_dir().join(format!("ap-mrpack-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let pack_path = tmp.join("bad-hash-pack.mrpack");
+    write_zip(
+        &pack_path,
+        &[("modrinth.index.json", serde_json::to_vec(&index).unwrap())],
+    );
+
+    let cfg = PorterConfig::default();
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir.clone(),
+        verbose: false,
+        hooks_json: None,
+    };
+    let summary =
+        auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack runs");
+    let made = hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    assert_eq!(summary["ported"], 0);
+    assert_eq!(summary["failures"], 1);
+    let entry = &summary["results"][0];
+    let mods = entry["mods"].as_array().unwrap();
+    assert_eq!(mods.len(), 1);
+    let err = mods[0]["error"].as_str().unwrap();
+    assert!(err.contains("sha1 mismatch"), "honest hash failure: {err}");
+    assert_eq!(made, 1);
+    assert!(
+        !out_dir.join("bad-hash-pack/veinminer.hmod").exists(),
+        "a file failing its pinned hash is never handed to the pipeline"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn curseforge_manifest_mods_are_recorded_honestly() {
+    // CurseForge manifests name files only as (projectID, fileID); without
+    // the key-gated CF API they cannot be downloaded, so the fallback must
+    // record each pair as requires-curseforge-api — never guess a URL.
+    let manifest = serde_json::json!({
+        "minecraft": {
+            "version": "1.21.1",
+            "modLoaders": [{"id": "fabric-0.16.9", "primary": true}]
+        },
+        "name": "cf-pack",
+        "files": [
+            {"projectID": 111111, "fileID": 222222},
+            {"projectID": 333333, "fileID": 444444}
+        ],
+        "overrides": "overrides"
+    });
+    let tmp = std::env::temp_dir().join(format!("ap-cfpack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let pack_path = tmp.join("cf-pack.zip");
+    write_zip(
+        &pack_path,
+        &[
+            ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+            ("overrides/config/common.toml", b"[a]\nb = 1\n".to_vec()),
+        ],
+    );
+
+    let cfg = PorterConfig::default();
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir.clone(),
+        verbose: false,
+        hooks_json: None,
+    };
+    let summary =
+        auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack runs");
+
+    let entry = &summary["results"][0];
+    assert_eq!(entry["archive"], "cf-pack");
+    assert_eq!(entry["format"], "curseforge");
+    let mods = entry["mods"].as_array().unwrap();
+    assert_eq!(mods.len(), 2);
+    for m in mods {
+        assert_eq!(m["status"], "requires-curseforge-api");
+    }
+    assert_eq!(mods[0]["project_id"], 111111);
+    assert_eq!(mods[1]["file_id"], 444444);
+    assert_eq!(summary["ported"], 0, "nothing invented, nothing faked");
+    assert_eq!(
+        summary["failures"], 0,
+        "a key-gated source is not a failure"
+    );
+    assert!(out_dir.join("cf-pack/config/common.toml").is_file());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 #[test]
 fn verify_rejects_foreign_top_level_entries_in_hnmod() {
     // a .hnmod carrying a top-level entry beyond horizon-native.json + mixins/

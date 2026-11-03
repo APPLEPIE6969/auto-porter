@@ -49,6 +49,33 @@ treats a missing `schema` as a warning, not a failure.
 `pack.mcmeta` is deliberately not copied: it is not an allowed top-level entry
 in a `.hmod` per `docs/api/mod-files.md`.
 
+### 2.1 Modpack archives: what the fallback does and does not do
+
+For a Modrinth `.mrpack` or a CurseForge zip, `port-pack` with the real
+carrier installed drives the upstream `horizon-port-pack import <archive>
+<work>` (verified against the upstream CLI surface — there is no `port`
+subcommand). Without the carrier, the manifest-driven fallback fills the gap
+the mission names — mods with Java code are not ported by the launcher:
+
+- `.mrpack` manifests list direct CDN URLs pinned by sha1: the fallback
+  downloads every `mods/*.jar`, verifies the pinned sha1 (and size when
+  declared) before anything touches the pipeline, and ports each mod through
+  the full five-phase pipeline. On the real Fabulously Optimized pack this
+  ports 49/49 code mods (~1,970 features) in ~10 s.
+- `resourcepacks/*.zip` and other non-`mods/*.jar` entries are recorded with
+  their kind and **not** pushed through the Java pipeline (an earlier build
+  misported the pack's resource packs as one-feature "mods" — fixed).
+- CurseForge manifests name files only as `(projectID, fileID)` pairs that
+  need the key-gated CF API: each pair is recorded
+  `requires-curseforge-api`, never guessed into a URL.
+- All three override roots (`overrides/`, `client-overrides/`,
+  `server-overrides/`) are carried as data.
+
+The fallback does not implement the real tool's `inventory`/`fetch`/`carry`
+chain (Modrinth lookups, 26.3 upgrades, resource-pack staging) — a
+`"carrier": "built-in-fallback"` entry in `port-pack-summary.json` marks
+exactly that.
+
 ## 3. Compile gate: deferred, never faked
 
 A standalone `cargo check` of a generated mod is not possible

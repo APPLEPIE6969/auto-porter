@@ -42,7 +42,13 @@ NVIDIA_API_KEY=nvapi-... cargo run -p cli -- --llm-provider nvidia \
 # Data only (used by CI)
 cargo run -p cli -- port tests/fixtures/jars/moreassets-fabric-2.1.0.jar --data-only --output ./output/
 
-# Modpack: a directory of jars, a Modrinth .mrpack, or a CurseForge zip
+# Modpack: a directory of jars, a Modrinth .mrpack, or a CurseForge zip.
+# For a .mrpack the manifest drives the run: every mods/*.jar is downloaded
+# from its pinned CDN URL, sha1-verified against the index, and ported
+# through the full pipeline (resource packs are recorded for the launcher
+# import; CurseForge id pairs are recorded honestly — the CF API is
+# key-gated). With horizon-port-pack installed the upstream
+# `import <archive> <work>` flow is used instead.
 cargo run -p cli -- port-pack path/to/modpack --horizon-revision <SHA> --output ./output/
 
 # Verify: --static / --compile / --parity / --in-game

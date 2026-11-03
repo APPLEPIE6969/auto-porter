@@ -368,34 +368,83 @@ pub fn port_pack(
         }
     }
 
-    // Modpack archives: carry `overrides/` and record what needs port-pack.
+    // Modpack archives (.mrpack / CurseForge zip), spec §7. With the real
+    // carrier installed the pack goes through `horizon-port-pack import
+    // <archive> <work>` (the launcher's own import; verified against the
+    // upstream CLI surface — there is no `port` subcommand). Without it,
+    // auto-porter fills exactly the gap the mission names: parse the
+    // manifest, download the listed jars (Modrinth packs carry public CDN
+    // URLs pinned by sha1), verify the hashes, and port each mod through the
+    // full pipeline. CurseForge manifests list files only as (projectID,
+    // fileID) pairs that need the CF API — recorded honestly, never guessed.
     for archive in modpack_archives(input) {
         let name = archive
             .0
             .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "modpack".to_string());
+        let work = opts.output.join(&name);
         if pack_available {
             let status = std::process::Command::new("horizon-port-pack")
-                .arg("port")
+                .arg("import")
                 .arg(archive.0.display().to_string())
-                .arg(opts.output.join(&name).display().to_string())
+                .arg(work.display().to_string())
                 .status();
             results.push(serde_json::json!({
                 "archive": name,
                 "carrier": "horizon-port-pack",
                 "status": if status.map(|s| s.success()).unwrap_or(false) { "ported" } else { "failed" },
             }));
-        } else {
-            let (carried, missing) = carry_modpack_overrides(&archive.1, &opts.output.join(&name));
-            let _ = missing;
-            results.push(serde_json::json!({
-                "archive": name,
-                "carrier": "overrides-only",
-                "carried": carried.len(),
-                "note": "mod files listed in the manifest need horizon-port-pack import (not installed here)",
-            }));
+            continue;
         }
+
+        let overrides = carry_modpack_overrides(&archive.1, &work);
+        let mut entry = serde_json::json!({
+            "archive": name,
+            "carrier": "built-in-fallback",
+            "overrides_carried": overrides,
+        });
+        match manifest_mods(&archive.1) {
+            Some(("mrpack", mods)) if !mods.is_empty() => {
+                let pack_opts = PortOptions {
+                    horizon_revision: opts.horizon_revision.clone(),
+                    data_only: opts.data_only,
+                    output: work.clone(),
+                    verbose: opts.verbose,
+                    hooks_json: opts.hooks_json.clone(),
+                };
+                let (mods_json, mod_ported, mod_failures) =
+                    port_mrpack_mods(&mods, cfg, &pack_opts, continue_on_error);
+                ported += mod_ported;
+                failures += mod_failures;
+                entry["format"] = serde_json::json!("mrpack");
+                entry["mods"] = serde_json::Value::Array(mods_json);
+            }
+            Some(("curseforge", mods)) => {
+                entry["format"] = serde_json::json!("curseforge");
+                entry["mods"] = serde_json::Value::Array(
+                    mods.iter()
+                        .map(|m| {
+                            let (project, file) = m.curseforge.unwrap_or_default();
+                            serde_json::json!({
+                                "project_id": project,
+                                "file_id": file,
+                                "status": "requires-curseforge-api",
+                                "note": "CurseForge manifests name files only by ids; \
+                                         downloading them needs the CF API (key-gated), \
+                                         so this mod is recorded, not ported",
+                            })
+                        })
+                        .collect(),
+                );
+            }
+            _ => {
+                entry["note"] = serde_json::json!(
+                    "no manifest mods recognized; overrides carried as data only"
+                );
+            }
+        }
+        results.push(entry);
     }
 
     let summary = serde_json::json!({
@@ -458,28 +507,272 @@ fn modpack_archives(input: &Path) -> Vec<(PathBuf, std::collections::BTreeMap<St
     out
 }
 
-/// Carry the `overrides/` tree of a Modrinth/CurseForge archive (data only;
-/// the real import/carry pipeline lives in horizon-port-pack).
+/// Carry the override trees of a Modrinth/CurseForge archive (data only;
+/// the real import/carry pipeline lives in horizon-port-pack). Modrinth
+/// allows three roots — `overrides/`, `client-overrides/`,
+/// `server-overrides/` (aligned with the upstream importer); CurseForge
+/// uses the root named by `manifest.json["overrides"]`.
 fn carry_modpack_overrides(
     entries: &std::collections::BTreeMap<String, Vec<u8>>,
     dest: &Path,
-) -> (Vec<String>, Vec<String>) {
-    let mut carried = Vec::new();
-    let mut missing = Vec::new();
+) -> std::collections::BTreeMap<String, usize> {
+    let roots = ["overrides", "client-overrides", "server-overrides"];
+    let mut carried = std::collections::BTreeMap::new();
     for (name, bytes) in entries {
-        let Some(rel) = name.strip_prefix("overrides/") else {
-            continue;
-        };
-        let target = dest.join(rel);
-        if std::fs::create_dir_all(target.parent().unwrap_or(dest)).is_ok() {
-            if std::fs::write(&target, bytes).is_ok() {
-                carried.push(rel.to_string());
-            } else {
-                missing.push(rel.to_string());
+        for root in roots {
+            let Some(rel) = name
+                .strip_prefix(&format!("{root}/"))
+                .filter(|_| !name.ends_with('/'))
+            else {
+                continue;
+            };
+            let target = dest.join(rel);
+            if std::fs::create_dir_all(target.parent().unwrap_or(dest)).is_ok()
+                && std::fs::write(&target, bytes).is_ok()
+            {
+                *carried.entry(root.to_string()).or_default() += 1;
             }
         }
     }
-    (carried, missing)
+    carried
+}
+
+/// One mod file referenced by a modpack manifest (spec §7 modpack inputs).
+struct ManifestMod {
+    /// Instance path, e.g. `mods/veinminer.jar`.
+    path: String,
+    /// Direct download URLs (Modrinth packs; empty for CurseForge ids).
+    downloads: Vec<String>,
+    /// Expected sha1 hex, when the manifest pins it.
+    sha1: Option<String>,
+    /// Declared size in bytes, when the manifest pins it.
+    size: Option<u64>,
+    /// CurseForge (projectID, fileID) — no public download without the API.
+    curseforge: Option<(u64, u64)>,
+}
+
+/// Detect a modpack archive's manifest and list the mods it references.
+/// Returns `(format, mods)` — `mrpack` for `modrinth.index.json`,
+/// `curseforge` for `manifest.json` — or `None` when neither is present.
+fn manifest_mods(
+    entries: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> Option<(&'static str, Vec<ManifestMod>)> {
+    if let Some(bytes) = entries.get("modrinth.index.json") {
+        let index: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        let mods = index["files"]
+            .as_array()
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| {
+                        let path = f.get("path")?.as_str()?.to_string();
+                        let downloads = f
+                            .get("downloads")
+                            .and_then(|d| d.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|u| u.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let sha1 = f
+                            .get("hashes")
+                            .and_then(|h| h.get("sha1"))
+                            .and_then(|s| s.as_str())
+                            .map(String::from);
+                        let size = f.get("fileSize").and_then(|s| s.as_u64());
+                        Some(ManifestMod {
+                            path,
+                            downloads,
+                            sha1,
+                            size,
+                            curseforge: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(("mrpack", mods));
+    }
+    if let Some(bytes) = entries.get("manifest.json") {
+        let manifest: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        let mods = manifest["files"]
+            .as_array()
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| {
+                        let project = f.get("projectID")?.as_u64()?;
+                        let file = f.get("fileID")?.as_u64()?;
+                        Some(ManifestMod {
+                            path: String::new(),
+                            downloads: Vec::new(),
+                            sha1: None,
+                            size: None,
+                            curseforge: Some((project, file)),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(("curseforge", mods));
+    }
+    None
+}
+
+/// Timeout for one manifest-mod download (mods are a few MB at most).
+const DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+
+/// Download a manifest mod's jar and verify it against the manifest pins
+/// (sha1 hex and declared size, when present). Bytes live in memory and are
+/// written only after verification — a tampered or truncated file is never
+/// handed to the pipeline.
+fn fetch_manifest_jar(mod_: &ManifestMod, url: &str) -> Result<Vec<u8>, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .build();
+    let resp = match agent.get(url).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {code}")),
+        Err(ureq::Error::Transport(t)) => return Err(format!("transport: {t}")),
+    };
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)
+        .map_err(|e| format!("read body: {e}"))?;
+    if let Some(size) = mod_.size {
+        if bytes.len() as u64 != size {
+            return Err(format!(
+                "size mismatch: manifest pins {size} bytes, downloaded {}",
+                bytes.len()
+            ));
+        }
+    }
+    if let Some(expected) = &mod_.sha1 {
+        let actual = sha1_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(format!(
+                "sha1 mismatch: manifest pins {expected}, downloaded file hashes to {actual}"
+            ));
+        }
+    }
+    Ok(bytes)
+}
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    use sha1::Digest;
+    sha1::Sha1::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Download and port every jar a Modrinth manifest lists. Returns
+/// `(result entries, ported, failures)`; a download or hash failure is a
+/// recorded failure (spec §9) that either aborts the pack or, with
+/// `continue_on_error`, lets the rest move on.
+fn port_mrpack_mods(
+    mods: &[ManifestMod],
+    cfg: &PorterConfig,
+    opts: &PortOptions,
+    continue_on_error: bool,
+) -> (Vec<serde_json::Value>, u32, u32) {
+    let mut results = Vec::new();
+    let (mut ported, mut failures) = (0u32, 0u32);
+    for mod_ in mods {
+        // Only `mods/*.jar` entries are code mods for this pipeline. A
+        // Modrinth manifest can also list e.g. `resourcepacks/*.zip`; those
+        // are data the launcher import / real carrier stages on its own —
+        // pushing them through the Java pipeline would misreport them as
+        // "ported" (seen for real with Fabulously Optimized's resource
+        // packs), so they are recorded with their kind instead.
+        if !(mod_.path.starts_with("mods/") && mod_.path.ends_with(".jar")) {
+            let kind = if mod_.path.starts_with("resourcepacks/") {
+                "resource-pack"
+            } else {
+                "non-mod-file"
+            };
+            results.push(serde_json::json!({
+                "mod": mod_.path,
+                "status": kind,
+                "note": "staged by the launcher import / horizon-port-pack; \
+                         not a code mod for this pipeline",
+            }));
+            continue;
+        }
+        let file_name = mod_
+            .path
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("mod.jar")
+            .to_string();
+        let Some(url) = mod_.downloads.first().cloned() else {
+            failures += 1;
+            results.push(serde_json::json!({
+                "mod": mod_.path,
+                "error": "manifest lists no direct download URL",
+            }));
+            if !continue_on_error {
+                break;
+            }
+            continue;
+        };
+        match fetch_manifest_jar(mod_, &url) {
+            Ok(bytes) => {
+                let jar_path = opts.output.join("mods").join(&file_name);
+                if let Err(e) = std::fs::create_dir_all(jar_path.parent().unwrap_or(&opts.output))
+                    .and_then(|_| std::fs::write(&jar_path, &bytes))
+                {
+                    failures += 1;
+                    results.push(serde_json::json!({
+                        "mod": mod_.path,
+                        "source": url,
+                        "error": format!("cannot stage jar: {e}"),
+                    }));
+                    if !continue_on_error {
+                        break;
+                    }
+                    continue;
+                }
+                match port(&jar_path, cfg, opts) {
+                    Ok(out) => {
+                        ported += 1;
+                        results.push(serde_json::json!({
+                            "mod": mod_.path,
+                            "source": url,
+                            "sha1": if mod_.sha1.is_some() { "verified" } else { "unpinned" },
+                            "mod_id": out.report.mod_id,
+                            "overall": out.report.overall.as_str(),
+                            "features": out.report.summary.total_features,
+                            "errors": out.report.errors.len(),
+                        }));
+                    }
+                    Err(e) => {
+                        failures += 1;
+                        results.push(serde_json::json!({
+                            "mod": mod_.path,
+                            "source": url,
+                            "error": e,
+                        }));
+                        if !continue_on_error {
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                results.push(serde_json::json!({
+                    "mod": mod_.path,
+                    "source": url,
+                    "error": e,
+                }));
+                if !continue_on_error {
+                    break;
+                }
+            }
+        }
+    }
+    (results, ported, failures)
 }
 
 /// `auto-porter verify` — three layers (spec §6). Single-artifact-set form:
