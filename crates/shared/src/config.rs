@@ -75,6 +75,17 @@ impl LlmCfg {
     pub fn is_fatal_status(code: u16) -> bool {
         matches!(code, 400..=407 | 409..=428 | 430..=499)
     }
+
+    /// Known server-side outage masquerading as a client error: NVIDIA NIM
+    /// routes model invocations through internal functions, and when the
+    /// deployment behind a model id is degraded the gateway answers HTTP 400
+    /// with `DEGRADED function cannot be invoked` (observed in CI on
+    /// 2026-11-03). Nothing about the *request* is wrong — retrying heals it
+    /// once the deployment recovers — so it must be classified retryable
+    /// despite being a 4xx status.
+    pub fn is_infra_degraded_body(body: &str) -> bool {
+        body.contains("DEGRADED function cannot be invoked")
+    }
 }
 
 impl Default for LlmCfg {

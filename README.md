@@ -98,10 +98,15 @@ What needs Horizon-side tooling (documented in
   retryable failures (408/429/5xx/transport/empty), with `retry_delay_ms`
   between attempts. **NVIDIA NIM always gets the documented ceiling of 100
   attempts per request** (its free tier rate-limits hard); auth/4xx client
-  errors are fatal and never retried. `reasoning_effort` (default `high`) is
+  errors are fatal and never retried — with one carve-out: NVIDIA's
+  server-side outage `400 DEGRADED function cannot be invoked` (the
+  deployment behind the model id is down; observed 2026-11-03) is classified
+  retryable, because nothing about the request is wrong.
+  `reasoning_effort` (default `high`) is
   sent to NVIDIA. `base_url` overrides the endpoint for self-hosted NIM or
-  gateways — `scripts/mock_llm_server.py` uses it to test the retry policy
-  without a key.
+  gateways — `scripts/mock_llm_server.py` (`flaky N`, `degraded N`,
+  `reject` modes) uses it to test the retry policy without a key, and the
+  e2e suite replays the degraded-400 sequence end to end.
 
 ## CI
 

@@ -2,16 +2,19 @@
 """Mock LLM endpoint for retry-policy tests.
 
 Modes:
-  flaky N   -> 429 (Retry-After: 0) for the first N requests, then 200 with a
-               minimal OpenAI-style completion; counts requests in counter file
-  reject    -> 401 always (auth fatal fast-fail)
+  flaky N     -> 429 (Retry-After: 0) for the first N requests, then 200 with a
+                 minimal OpenAI-style completion; counts requests in counter file
+  degraded N  -> 400 with NVIDIA's server-side outage signature
+                 ("DEGRADED function cannot be invoked") for the first N
+                 requests, then 200 — proves the retryable carve-out
+  reject      -> 401 always (auth fatal fast-fail)
 """
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 MODE = sys.argv[1]
-FLAKY_N = int(sys.argv[2]) if MODE == "flaky" else 0
+FLAKY_N = int(sys.argv[2]) if MODE in ("flaky", "degraded") else 0
 COUNTER = sys.argv[3]
 PORT = int(sys.argv[4])
 
@@ -39,6 +42,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(429)
             self.send_header("Retry-After", "0")
             body = b'{"error":{"message":"Rate limit exceeded","code":429}}'
+        elif MODE == "degraded" and count <= FLAKY_N:
+            self.send_response(400)
+            body = (b'{"status":400,"title":"Bad Request","detail":'
+                    b'"Function id \'eb8265c4-e47d-4047-918d-c12746cc2cee\': '
+                    b'DEGRADED function cannot be invoked"}')
         else:
             body = json.dumps({
                 "choices": [{"message": {"content":

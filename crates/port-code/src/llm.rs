@@ -82,7 +82,10 @@ pub enum LlmOutcome {
     /// bodies. The caller may re-send within the attempt budget.
     Failed(PortError),
     /// Non-retryable failure (auth 401/403, unknown model 404, malformed
-    /// request 400/422). Retrying cannot heal it — fail immediately.
+    /// request 400/422). Retrying cannot heal it — fail immediately. The one
+    /// carve-out is NVIDIA's `DEGRADED function cannot be invoked` 400,
+    /// which is a server-side outage wearing a 4xx status; `call` routes it
+    /// to `Failed` instead.
     Fatal(PortError),
 }
 
@@ -226,7 +229,10 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                     truncate(&body, 400)
                 ),
             );
-            if LlmCfg::is_fatal_status(code) {
+            // NVIDIA's "DEGRADED function cannot be invoked" arrives as 400
+            // but is a server-side outage — retry it (spec §10: the free
+            // tier fails transiently by design).
+            if LlmCfg::is_fatal_status(code) && !LlmCfg::is_infra_degraded_body(&body) {
                 LlmOutcome::Fatal(err)
             } else {
                 LlmOutcome::Failed(err)
@@ -293,5 +299,125 @@ fn truncate(s: &str, n: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..n])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::config::LlmCfg;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn degraded_body_signature_detected() {
+        // verbatim body observed in CI on 2026-11-03
+        let real = r#"{"status":400,"title":"Bad Request","detail":"Function id 'eb8265c4-e47d-4047-918d-c12746cc2cee': DEGRADED function cannot be invoked"}"#;
+        assert!(LlmCfg::is_infra_degraded_body(real));
+        assert!(!LlmCfg::is_infra_degraded_body(
+            r#"{"error":{"message":"Invalid model id","code":400}}"#
+        ));
+        assert!(!LlmCfg::is_infra_degraded_body(""));
+    }
+
+    /// A single `call` against an in-process mock: the DEGRADED-400 (the
+    /// NVIDIA server-side outage signature) must come back as retryable
+    /// `Failed`, not `Fatal`. The full retry loop is exercised by the
+    /// e2e test in the cli crate.
+    #[test]
+    fn degraded_400_is_retryable_not_fatal() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let served = requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf); // request line + headers + body
+                served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = r#"{"status":400,"title":"Bad Request","detail":"Function id 'eb8265c4-e47d-4047-918d-c12746cc2cee': DEGRADED function cannot be invoked"}"#;
+                let resp = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        std::env::set_var("OPENAI_API_KEY", "test-key-for-degraded");
+        let mut cfg = PorterConfig::default();
+        cfg.llm.provider = "openai".to_string();
+        cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+        let req = LlmRequest {
+            mod_id: "mockmod".into(),
+            hook_name: "on_player_tick".into(),
+            contract: "listen".into(),
+            hook_version: 1,
+            java_ir: "class Mock { void onPlayerTick() {} }".into(),
+            hook_signature: "fn on_player_tick(&mut self)".into(),
+            relevant_helpers: "".into(),
+            few_shot_examples: "".into(),
+        };
+
+        let outcome = call(&req, &cfg);
+        let made = requests.load(std::sync::atomic::Ordering::SeqCst);
+        std::env::remove_var("OPENAI_API_KEY");
+
+        assert_eq!(
+            made, 1,
+            "exactly one request; classification, not the retry loop"
+        );
+        assert!(
+            matches!(outcome, LlmOutcome::Failed(_)),
+            "DEGRADED 400 must be retryable (Failed), not Fatal"
+        );
+    }
+
+    /// The genuine client error must stay fatal: an auth 401 aborts instead
+    /// of burning the attempt budget.
+    #[test]
+    fn auth_401_stays_fatal() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let served = requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = r#"{"error":{"message":"Invalid key","code":401}}"#;
+                let resp = format!(
+                    "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        std::env::set_var("OPENAI_API_KEY", "wrong-key");
+        let mut cfg = PorterConfig::default();
+        cfg.llm.provider = "openai".to_string();
+        cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+        cfg.llm.retry_delay_ms = 1;
+        let req = LlmRequest {
+            mod_id: "mockmod".into(),
+            hook_name: "on_player_tick".into(),
+            contract: "listen".into(),
+            hook_version: 1,
+            java_ir: "class Mock {}".into(),
+            hook_signature: "fn on_player_tick(&mut self)".into(),
+            relevant_helpers: "".into(),
+            few_shot_examples: "".into(),
+        };
+
+        let outcome = call(&req, &cfg);
+        let made = requests.load(std::sync::atomic::Ordering::SeqCst);
+        std::env::remove_var("OPENAI_API_KEY");
+
+        assert_eq!(made, 1, "401 must not be retried");
+        assert!(matches!(outcome, LlmOutcome::Fatal(_)));
     }
 }
