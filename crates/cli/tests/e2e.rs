@@ -11,6 +11,54 @@ use std::path::{Path, PathBuf};
 /// parallel threads and set_var/remove_var races are UB-adjacent.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Poison-tolerant acquisition: if a serialized test panics while holding
+/// ENV_LOCK, the remaining tests must still run (a genuine failure must not
+/// cascade into unrelated PoisonError failures — CI run f82ce33).
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read one HTTP request off `stream`, tolerating TCP split writes: loop
+/// until the header block is complete and — when a Content-Length is
+/// present — the body has fully arrived. A mock server that does a single
+/// `read()` can capture an empty/partial body when the client's headers and
+/// body land in separate segments (exactly what failed on CI:
+/// `llm_prompt_carries_real_upstream_source` captured "" and answered 200
+/// anyway). ureq always sends Content-Length for a JSON body, so the
+/// content-length loop below terminates deterministically.
+fn read_http_request<R: std::io::Read>(stream: &mut R) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let header_end = loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => return buf, // EOF before a full header block
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => return buf,
+        }
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos;
+        }
+        if buf.len() > 1 << 20 {
+            return buf; // absurd request; never loop forever
+        }
+    };
+    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+    let content_length: usize = headers
+        .lines()
+        .find_map(|l| l.strip_prefix("content-length:"))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let want = header_end + 4 + content_length;
+    while buf.len() < want {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+    }
+    buf
+}
+
 fn ws(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../")
@@ -153,7 +201,7 @@ fn llm_retries_through_nvidia_degraded_400s() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    let _env = ENV_LOCK.lock().unwrap();
+    let _env = env_lock();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let requests = Arc::new(AtomicUsize::new(0));
@@ -718,7 +766,7 @@ fn sibling_jars_resolve_cross_mod_mixin_targets() {
 /// Serve canned responses by path prefix on a local port (Modrinth API /
 /// codeload / CDN stand-ins for the source-fetch e2e).
 fn serve_by_path(routes: Vec<(&'static str, Vec<u8>)>) -> std::net::SocketAddr {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::net::TcpListener;
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -726,9 +774,10 @@ fn serve_by_path(routes: Vec<(&'static str, Vec<u8>)>) -> std::net::SocketAddr {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            let req = String::from_utf8_lossy(&buf);
+            // read_http_request guarantees the full header block (and hence
+            // the request line carrying the path) is present before parsing.
+            let raw = read_http_request(&mut stream);
+            let req = String::from_utf8_lossy(&raw);
             let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
             let hit = routes
                 .iter()
@@ -834,7 +883,7 @@ fn mrpack_fetches_upstream_source_from_modrinth_linked_github() {
     ]);
     let gh = serve_by_path(vec![("/example/veinminer/tar.gz/HEAD", tarball)]);
 
-    let _env = ENV_LOCK.lock().unwrap();
+    let _env = env_lock();
     std::env::set_var("AUTO_PORTER_MODRINTH_API", format!("http://{api}"));
     std::env::set_var("AUTO_PORTER_GITHUB_CODELOAD", format!("http://{gh}"));
 
@@ -929,10 +978,10 @@ fn llm_prompt_carries_real_upstream_source() {
     // The point of the source fetch: when the mod's GitHub source is staged,
     // the LLM fallback request must carry the actual upstream Java code (not
     // just the class/method inventory the class-file AST can produce).
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::net::TcpListener;
 
-    let _env = ENV_LOCK.lock().unwrap();
+    let _env = env_lock();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -940,11 +989,9 @@ fn llm_prompt_carries_real_upstream_source() {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut buf = vec![0u8; 65536];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let req = String::from_utf8_lossy(&read_http_request(&mut stream)).to_string();
             if let Some(body) = req.split("\r\n\r\n").nth(1) {
-                *store.lock().unwrap() = body.to_string();
+                *store.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             }
             let body = r#"{"choices":[{"message":{"content":"/// ported with upstream source\fn on_player_tick() {}"}}]}"#;
             let resp = format!(
@@ -997,7 +1044,7 @@ fn llm_prompt_carries_real_upstream_source() {
         shared::report::FeatureStatus::Ported,
         "tick feature ported through the source-aware LLM path"
     );
-    let body = captured.lock().unwrap().clone();
+    let body = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
         body.contains("UPSTREAM_ON_TICK_MARKER_42"),
         "the LLM request must carry the real upstream source, got: {body:.500}"
