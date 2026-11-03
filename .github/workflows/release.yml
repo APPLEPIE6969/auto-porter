@@ -40,5 +40,7 @@ jobs:
           ls -l "$name".*
       - uses: softprops/action-gh-release@v2
         with:
-          files: auto-porter-*
+          # Archive names are auto-porter-v<tag>-<target>; `auto-porter-*`
+          # would also match repo-root files like auto-porter-prompt.md.
+          files: auto-porter-v*
           generate_release_notes: true
