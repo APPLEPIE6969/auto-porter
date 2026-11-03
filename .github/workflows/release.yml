@@ -24,10 +24,20 @@ jobs:
       - name: Package
         shell: bash
         run: |
+          set -euo pipefail
           name="auto-porter-${{ github.ref_name }}-${{ matrix.target }}"
+          # The release must never ship an empty archive (spec §9: no silent
+          # failures) — fail loudly if the binary is missing instead of
+          # swallowing the cp error. Windows builds `auto-porter.exe`.
+          bin="target/${{ matrix.target }}/release/auto-porter"
+          if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
+          [ -f "$bin" ] || { echo "release binary not found: $bin" >&2; exit 1; }
           mkdir "$name"
-          cp target/${{ matrix.target }}/release/auto-porter* "$name"/ 2>/dev/null || true
+          cp "$bin" "$name"/
           if [ "${{ matrix.ext }}" = "zip" ]; then 7z a "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
+          # Do not let the staging directory match the upload glob below.
+          rm -r "$name"
+          ls -l "$name".*
       - uses: softprops/action-gh-release@v2
         with:
           files: auto-porter-*
