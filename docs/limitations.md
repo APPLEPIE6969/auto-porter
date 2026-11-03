@@ -62,6 +62,20 @@ the mission names — mods with Java code are not ported by the launcher:
   declared) before anything touches the pipeline, and ports each mod through
   the full five-phase pipeline. On the real Fabulously Optimized pack this
   ports 49/49 code mods (~1,970 features) in ~10 s.
+- **Upstream source**: for a Modrinth CDN URL the project id is resolved via
+  the public Modrinth API to the `source_url` its page links; for GitHub
+  repos the default-branch tarball (`codeload.github.com`, no API key) is
+  fetched, extracted under `<work>/sources/<mod>/` (path-traversal guarded,
+  64 MiB cap), and handed to the LLM fallback as real upstream code instead
+  of bare decompiled signatures. Every outcome is recorded in
+  `port-pack-summary.json` as `code_source.status`: `fetched`, `no-source-url`,
+  `non-github`, `no-java-sources`, or `fetch-failed` — nothing is invented
+  when a mod has no usable repo link.
+- **Cross-mod mixin targets**: the pack builds a class index over all staged
+  sibling jars, so a compat mixin targeting another pack mod's API class
+  resolves instead of false-failing the `mixin_targets_resolvable` gate
+  (single-jar ports still flag it). `org/lwjgl/*` is a known runtime prefix —
+  LWJGL ships with Minecraft itself.
 - `resourcepacks/*.zip` and other non-`mods/*.jar` entries are recorded with
   their kind and **not** pushed through the Java pipeline (an earlier build
   misported the pack's resource packs as one-feature "mods" — fixed).
@@ -70,6 +84,9 @@ the mission names — mods with Java code are not ported by the launcher:
   `requires-curseforge-api`, never guessed into a URL.
 - All three override roots (`overrides/`, `client-overrides/`,
   `server-overrides/`) are carried as data.
+
+The API endpoints can be redirected for offline tests via
+`AUTO_PORTER_MODRINTH_API` and `AUTO_PORTER_GITHUB_CODELOAD`.
 
 The fallback does not implement the real tool's `inventory`/`fetch`/`carry`
 chain (Modrinth lookups, 26.3 upgrades, resource-pack staging) — a

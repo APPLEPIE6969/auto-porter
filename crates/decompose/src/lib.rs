@@ -18,6 +18,18 @@ pub struct DecomposeOutput {
 
 /// Unpack the jar and produce the `DecomposedMod` typed artifact.
 pub fn decompose(jar_path: &Path) -> Result<DecomposeOutput, String> {
+    decompose_with(jar_path, &[])
+}
+
+/// Like [`decompose`], but with a list of class names known to exist outside
+/// this jar — the sibling jars of the same modpack, collected by the pack
+/// flow so a cross-mod compat mixin (an API mod's class referenced by
+/// another mod's `@Mixin`) resolves instead of false-failing the
+/// `mixin_targets_resolvable` gate.
+pub fn decompose_with(
+    jar_path: &Path,
+    extra_known_classes: &[String],
+) -> Result<DecomposeOutput, String> {
     let file = std::fs::File::open(jar_path)
         .map_err(|e| format!("cannot open {}: {e}", jar_path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
@@ -136,19 +148,24 @@ pub fn decompose(jar_path: &Path) -> Result<DecomposeOutput, String> {
 
     let class_names: std::collections::HashSet<&str> =
         classes.iter().map(|c| c.this_class.as_str()).collect();
-    const KNOWN_PREFIXES: [&str; 6] = [
+    // `org/lwjgl` ships with Minecraft itself (windowing/input); a mixin
+    // targeting e.g. `org/lwjgl/glfw/GLFW` resolves on every runtime
+    // classpath even though the class is never inside the mod jar.
+    const KNOWN_PREFIXES: [&str; 7] = [
         "net/minecraft",
         "com/mojang",
         "net/neoforged",
         "net/minecraftforge",
         "net/fabricmc",
+        "org/lwjgl",
         "java/",
     ];
     let mut gate_errors = Vec::new();
     for m in &mixins {
         if let Some(target) = &m.target_class {
             let known = class_names.contains(target.as_str())
-                || KNOWN_PREFIXES.iter().any(|p| target.starts_with(p));
+                || KNOWN_PREFIXES.iter().any(|p| target.starts_with(p))
+                || extra_known_classes.iter().any(|c| c == target);
             if !known {
                 gate_violations.push(GateViolation {
                     gate: "mixin_targets_resolvable".to_string(),

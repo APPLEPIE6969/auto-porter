@@ -3,6 +3,7 @@
 
 pub mod llm;
 pub mod scenarios;
+pub mod sources;
 
 use shared::catalog::HookCatalog;
 use shared::config::PorterConfig;
@@ -24,6 +25,7 @@ pub struct CodeGenOutcome {
     pub hooks_used: Vec<HookRef>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn port_code(
     plan: &PortPlan,
     decomposed: &DecomposedMod,
@@ -32,6 +34,7 @@ pub fn port_code(
     revision_override: Option<&str>,
     out_dir: &Path,
     verbose: bool,
+    sources: &sources::JavaSources,
 ) -> CodeGenOutcome {
     let mut outcomes = Vec::new();
     let mut errors = Vec::new();
@@ -91,7 +94,15 @@ pub fn port_code(
                     Some(template_name) => {
                         render_template(template_name, feature, hook, decomposed, verbose)
                     }
-                    None => llm_fallback(feature, hook, decomposed, catalog, cfg, &mut errors),
+                    None => llm_fallback(
+                        feature,
+                        hook,
+                        decomposed,
+                        catalog,
+                        cfg,
+                        sources,
+                        &mut errors,
+                    ),
                 };
 
                 match generated {
@@ -290,9 +301,14 @@ fn llm_fallback(
     decomposed: &DecomposedMod,
     catalog: &HookCatalog,
     cfg: &PorterConfig,
+    sources: &sources::JavaSources,
     errors: &mut Vec<PortError>,
 ) -> Option<String> {
     let java_ir = java_ir_for(feature, decomposed);
+    // When the mod's real upstream source was fetched from its GitHub repo,
+    // hand the model the actual code of the feature's classes — decompiled
+    // signatures alone lose the behaviour the port must replicate.
+    let java_ir = upstream_source_context(&java_ir, feature, sources);
     let hook_signature = catalog
         .get(&hook.name)
         .map(|d| {
@@ -408,6 +424,50 @@ fn java_ir_for(feature: &Feature, decomposed: &DecomposedMod) -> String {
         out.push("(no Java IR captured for this feature)".to_string());
     }
     out.join("\n")
+}
+
+/// Budget for real upstream source text handed to the LLM per feature (the
+/// request must stay inside the provider context window even for large
+/// classes; multiple source classes share the budget in feature order).
+const UPSTREAM_SOURCE_BUDGET: usize = 6_000;
+
+/// Append the real upstream source of the feature's classes to the Java IR
+/// when it was fetched. Classes without a fetched source keep the inventory
+/// line only — nothing is invented.
+fn upstream_source_context(
+    java_ir: &str,
+    feature: &Feature,
+    sources: &sources::JavaSources,
+) -> String {
+    if sources.is_empty() {
+        return java_ir.to_string();
+    }
+    let mut snippets = Vec::new();
+    let mut budget = UPSTREAM_SOURCE_BUDGET;
+    for source in &feature.sources {
+        if budget == 0 {
+            break;
+        }
+        let class = source.split("::").next().unwrap_or(source);
+        let Some(code) = sources.snippet_for(class, budget) else {
+            continue;
+        };
+        budget = budget.saturating_sub(code.chars().count());
+        let attribution = sources
+            .repo()
+            .map(|r| format!(" (github.com/{r})"))
+            .unwrap_or_default();
+        snippets.push(format!(
+            "// real upstream source of {class}{attribution}\n{code}"
+        ));
+    }
+    if snippets.is_empty() {
+        return java_ir.to_string();
+    }
+    format!(
+        "{java_ir}\n\nreal upstream source code:\n{}",
+        snippets.join("\n\n")
+    )
 }
 
 fn load_template(name: &str) -> Option<String> {

@@ -4,6 +4,7 @@
 //! pipeline so integration tests can drive it in-process.
 
 use classify::ClassifyOutput;
+use port_code::sources::JavaSources;
 use shared::catalog::HookCatalog;
 use shared::config::PorterConfig;
 use shared::error::PortError;
@@ -11,12 +12,22 @@ use shared::report::*;
 use shared::types::*;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct PortOptions {
     pub horizon_revision: Option<String>,
     pub data_only: bool,
     pub output: PathBuf,
     pub verbose: bool,
     pub hooks_json: Option<PathBuf>,
+    /// Class names that exist in the other jars of the same pack: cross-mod
+    /// compat mixin targets resolve against them instead of false-failing
+    /// the resolvable-targets gate (an API mod's class referenced by another
+    /// mod's @Mixin is real, just not inside this jar).
+    pub pack_classes: Vec<String>,
+    /// Real upstream Java source tree (fetched from the mod's GitHub repo
+    /// via its Modrinth metadata). When present, the LLM fallback prompt
+    /// carries the actual upstream code instead of decompiled signatures.
+    pub source_dir: Option<PathBuf>,
 }
 
 pub struct PortOutput {
@@ -57,7 +68,7 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
 
     // ---- Phase 1: Decompose
-    let decompiled = decompose::decompose(jar)?;
+    let decompiled = decompose::decompose_with(jar, &opts.pack_classes)?;
     let mod_ir = &decompiled.mod_ir;
     if opts.verbose {
         eprintln!(
@@ -130,6 +141,12 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
         let revision = horizon_revision
             .clone()
             .unwrap_or_else(|| cfg.horizon.revision.clone());
+        // Real upstream source when the pack flow (or --source) staged it;
+        // empty otherwise, which keeps the prompt on decompiled inventory.
+        let sources = match &opts.source_dir {
+            Some(dir) => JavaSources::load(dir),
+            None => JavaSources::empty(),
+        };
         let outcome = port_code::port_code(
             &classified.plan,
             mod_ir,
@@ -138,6 +155,7 @@ pub fn port(jar: &Path, cfg: &PorterConfig, opts: &PortOptions) -> Result<PortOu
             Some(&revision),
             out_dir,
             opts.verbose,
+            &sources,
         );
         if opts.verbose {
             eprintln!(
@@ -335,6 +353,11 @@ pub fn port_pack(
         Vec::new()
     };
 
+    // Class names of every sibling jar: a compat mixin in jar A targeting an
+    // API class from jar B is real and must not fail the targets gate.
+    let dir_pack_classes =
+        pack_class_index(&jars.iter().map(|p| p.as_path()).collect::<Vec<&Path>>());
+
     let pack_bin = cfg.expand(&cfg.horizon.port_pack_path);
     let pack_available = pack_bin.is_file()
         || std::env::var_os("PATH")
@@ -344,7 +367,11 @@ pub fn port_pack(
             .unwrap_or(false);
 
     for jar in &jars {
-        match port(jar, cfg, opts) {
+        let jar_opts = PortOptions {
+            pack_classes: dir_pack_classes.clone(),
+            ..opts.clone()
+        };
+        match port(jar, cfg, &jar_opts) {
             Ok(out) => {
                 ported += 1;
                 results.push(serde_json::json!({
@@ -406,15 +433,8 @@ pub fn port_pack(
         });
         match manifest_mods(&archive.1) {
             Some(("mrpack", mods)) if !mods.is_empty() => {
-                let pack_opts = PortOptions {
-                    horizon_revision: opts.horizon_revision.clone(),
-                    data_only: opts.data_only,
-                    output: work.clone(),
-                    verbose: opts.verbose,
-                    hooks_json: opts.hooks_json.clone(),
-                };
                 let (mods_json, mod_ported, mod_failures) =
-                    port_mrpack_mods(&mods, cfg, &pack_opts, continue_on_error);
+                    port_mrpack_mods(&mods, cfg, opts, continue_on_error, &work);
                 ported += mod_ported;
                 failures += mod_failures;
                 entry["format"] = serde_json::json!("mrpack");
@@ -666,18 +686,34 @@ fn sha1_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Download and port every jar a Modrinth manifest lists. Returns
-/// `(result entries, ported, failures)`; a download or hash failure is a
-/// recorded failure (spec §9) that either aborts the pack or, with
+/// Download and port every jar a Modrinth manifest lists, in three phases:
+///
+/// 1. download + verify every `mods/*.jar` (bytes staged only after the
+///    pinned sha1/size check), fetching each mod's upstream source from the
+///    GitHub repo its Modrinth metadata links;
+/// 2. build the sibling class index over the staged jars (cross-mod compat
+///    mixin targets resolve instead of false-failing the targets gate);
+/// 3. port each staged mod through the full pipeline.
+///
+/// Returns `(result entries, ported, failures)`; a download or hash failure
+/// is a recorded failure (spec §9) that either aborts the pack or, with
 /// `continue_on_error`, lets the rest move on.
 fn port_mrpack_mods(
     mods: &[ManifestMod],
     cfg: &PorterConfig,
     opts: &PortOptions,
     continue_on_error: bool,
+    work: &Path,
 ) -> (Vec<serde_json::Value>, u32, u32) {
     let mut results = Vec::new();
     let (mut ported, mut failures) = (0u32, 0u32);
+
+    // ---- Phase A: downloads + upstream source
+    struct Staged {
+        jar_path: PathBuf,
+        entry: serde_json::Value,
+    }
+    let mut staged: Vec<Staged> = Vec::new();
     for mod_ in mods {
         // Only `mods/*.jar` entries are code mods for this pipeline. A
         // Modrinth manifest can also list e.g. `resourcepacks/*.zip`; those
@@ -712,67 +748,332 @@ fn port_mrpack_mods(
                 "error": "manifest lists no direct download URL",
             }));
             if !continue_on_error {
-                break;
+                return (results, ported, failures);
             }
             continue;
         };
+        let fail = |msg: String| {
+            serde_json::json!({
+                "mod": mod_.path,
+                "source": url,
+                "error": msg,
+            })
+        };
         match fetch_manifest_jar(mod_, &url) {
             Ok(bytes) => {
-                let jar_path = opts.output.join("mods").join(&file_name);
-                if let Err(e) = std::fs::create_dir_all(jar_path.parent().unwrap_or(&opts.output))
+                let jar_path = work.join("mods").join(&file_name);
+                if let Err(e) = std::fs::create_dir_all(jar_path.parent().unwrap_or(work))
                     .and_then(|_| std::fs::write(&jar_path, &bytes))
                 {
                     failures += 1;
-                    results.push(serde_json::json!({
-                        "mod": mod_.path,
-                        "source": url,
-                        "error": format!("cannot stage jar: {e}"),
-                    }));
+                    results.push(fail(format!("cannot stage jar: {e}")));
                     if !continue_on_error {
-                        break;
+                        return (results, ported, failures);
                     }
                     continue;
                 }
-                match port(&jar_path, cfg, opts) {
-                    Ok(out) => {
-                        ported += 1;
-                        results.push(serde_json::json!({
-                            "mod": mod_.path,
-                            "source": url,
-                            "sha1": if mod_.sha1.is_some() { "verified" } else { "unpinned" },
-                            "mod_id": out.report.mod_id,
-                            "overall": out.report.overall.as_str(),
-                            "features": out.report.summary.total_features,
-                            "errors": out.report.errors.len(),
-                        }));
-                    }
-                    Err(e) => {
-                        failures += 1;
-                        results.push(serde_json::json!({
-                            "mod": mod_.path,
-                            "source": url,
-                            "error": e,
-                        }));
-                        if !continue_on_error {
-                            break;
-                        }
-                    }
-                }
+                // Upstream source: resolved from the Modrinth metadata the
+                // CDN URL points at; every outcome recorded, none fatal.
+                let stem = file_name.trim_end_matches(".jar");
+                let code_source = fetch_upstream_source(&url, &work.join("sources").join(stem));
+                let entry = serde_json::json!({
+                    "mod": mod_.path,
+                    "source": url,
+                    "sha1": if mod_.sha1.is_some() { "verified" } else { "unpinned" },
+                    "code_source": code_source,
+                });
+                staged.push(Staged { jar_path, entry });
             }
             Err(e) => {
                 failures += 1;
-                results.push(serde_json::json!({
-                    "mod": mod_.path,
-                    "source": url,
-                    "error": e,
-                }));
+                results.push(fail(e));
                 if !continue_on_error {
-                    break;
+                    return (results, ported, failures);
                 }
             }
         }
     }
+
+    // ---- Phase B: sibling class index over the staged jars
+    let jar_refs: Vec<&Path> = staged.iter().map(|s| s.jar_path.as_path()).collect();
+    let pack_classes = pack_class_index(&jar_refs);
+
+    // ---- Phase C: full pipeline per staged mod
+    for s in staged {
+        let mod_opts = PortOptions {
+            pack_classes: pack_classes.clone(),
+            output: work.to_path_buf(),
+            ..opts.clone()
+        };
+        let mut entry = s.entry;
+        match port(&s.jar_path, cfg, &mod_opts) {
+            Ok(out) => {
+                ported += 1;
+                entry["mod_id"] = serde_json::json!(out.report.mod_id);
+                entry["overall"] = serde_json::json!(out.report.overall.as_str());
+                entry["features"] = serde_json::json!(out.report.summary.total_features);
+                entry["errors"] = serde_json::json!(out.report.errors.len());
+            }
+            Err(e) => {
+                failures += 1;
+                entry["error"] = serde_json::json!(e);
+            }
+        }
+        results.push(entry);
+    }
     (results, ported, failures)
+}
+
+/// Class names present in the given jars (entry names only — no parsing):
+/// `a/b/C.class` -> `a/b/C`. Sibling-jar knowledge for the mixin-targets
+/// gate: a compat mixin's target class lives in the API mod's jar, not the
+/// mixin author's.
+fn pack_class_index(jars: &[&Path]) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for jar in jars {
+        let Ok(file) = std::fs::File::open(jar) else {
+            continue;
+        };
+        let Ok(mut archive) = zip::ZipArchive::new(file) else {
+            continue;
+        };
+        for i in 0..archive.len() {
+            let Ok(zf) = archive.by_index(i) else {
+                continue;
+            };
+            if zf.is_dir() {
+                continue;
+            }
+            let name = zf.name().trim_start_matches("./");
+            let Some(cls) = name.strip_suffix(".class") else {
+                continue;
+            };
+            if cls.ends_with("module-info") || cls.ends_with("package-info") {
+                continue;
+            }
+            out.insert(cls.to_string());
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The Modrinth project id embedded in a CDN download URL:
+/// `https://cdn.modrinth.com/data/<project id>/versions/…`.
+fn modrinth_project_id(url: &str) -> Option<String> {
+    let rest = url.split("/data/").nth(1)?;
+    let id = rest.split('/').next()?;
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
+}
+
+/// `https://github.com/<owner>/<repo>[.git][/tree/…]` -> `owner/repo`, for
+/// github.com hosts only. Anything else is recorded, never guessed at.
+fn github_repo_from_source_url(source_url: &str) -> Option<String> {
+    let rest = source_url
+        .trim()
+        .strip_prefix("https://github.com/")
+        .or_else(|| source_url.trim().strip_prefix("http://github.com/"))?;
+    let mut segs = rest.trim_end_matches('/').split('/');
+    let owner = segs.next()?.trim();
+    let repo = segs.next()?.trim();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    Some(format!("{owner}/{repo}"))
+}
+
+fn modrinth_api_base() -> String {
+    std::env::var("AUTO_PORTER_MODRINTH_API").unwrap_or_else(|_| "https://api.modrinth.com".into())
+}
+
+fn github_codeload_base() -> String {
+    std::env::var("AUTO_PORTER_GITHUB_CODELOAD")
+        .unwrap_or_else(|_| "https://codeload.github.com".into())
+}
+
+/// Total bytes extracted from one source tarball (repositories can be
+/// arbitrarily large; the pipeline needs the Java sources, not the vendoring).
+const SOURCE_EXTRACT_CAP: u64 = 64 * 1024 * 1024;
+
+/// Resolve a mod's upstream source and stage it under `dest`. The project id
+/// comes from the Modrinth CDN URL, the repo link from the public Modrinth
+/// API, and the code from GitHub's default-branch tarball (codeload, no API
+/// key). Every outcome is recorded — a missing link or a non-GitHub host is
+/// data for the report, not a pipeline error.
+fn fetch_upstream_source(download_url: &str, dest: &Path) -> serde_json::Value {
+    let Some(project_id) = modrinth_project_id(download_url) else {
+        return serde_json::Value::Null;
+    };
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .user_agent(&format!("auto-porter/{}", env!("CARGO_PKG_VERSION")))
+        .build();
+    let project: serde_json::Value = match agent
+        .get(&format!(
+            "{}/v2/project/{}",
+            modrinth_api_base(),
+            project_id
+        ))
+        .call()
+    {
+        Ok(resp) => match resp.into_json() {
+            Ok(v) => v,
+            Err(e) => {
+                return serde_json::json!({
+                    "status": "fetch-failed",
+                    "detail": format!("modrinth api body: {e}")
+                })
+            }
+        },
+        Err(ureq::Error::Status(code, _)) => {
+            return serde_json::json!({
+                "status": "fetch-failed",
+                "detail": format!("modrinth api HTTP {code}")
+            })
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return serde_json::json!({
+                "status": "fetch-failed",
+                "detail": format!("modrinth api: {t}")
+            })
+        }
+    };
+    let source_url = project
+        .get("source_url")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if source_url.is_empty() {
+        return serde_json::json!({ "status": "no-source-url" });
+    }
+    let Some(repo) = github_repo_from_source_url(&source_url) else {
+        return serde_json::json!({ "status": "non-github", "repo": source_url });
+    };
+
+    let tar_url = format!("{}/{}/tar.gz/HEAD", github_codeload_base(), repo);
+    let bytes = match agent.get(&tar_url).call() {
+        Ok(resp) => {
+            let mut bytes = Vec::new();
+            if std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes).is_err() {
+                return serde_json::json!({
+                    "status": "fetch-failed",
+                    "repo": repo,
+                    "detail": "could not read the source tarball body"
+                });
+            }
+            bytes
+        }
+        Err(ureq::Error::Status(code, _)) => {
+            return serde_json::json!({
+                "status": "fetch-failed",
+                "repo": repo,
+                "detail": format!("codeload HTTP {code}")
+            })
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return serde_json::json!({
+                "status": "fetch-failed",
+                "repo": repo,
+                "detail": format!("codeload: {t}")
+            })
+        }
+    };
+
+    if let Err(e) = extract_tar_gz(&bytes, dest) {
+        return serde_json::json!({
+            "status": "fetch-failed",
+            "repo": repo,
+            "detail": e
+        });
+    }
+    flatten_single_root(dest);
+    if !dir_has_java(dest) {
+        return serde_json::json!({ "status": "no-java-sources", "repo": repo });
+    }
+    serde_json::json!({
+        "status": "fetched",
+        "repo": repo,
+        "dir": dest.display().to_string()
+    })
+}
+
+/// Extract a gzipped tarball (the codeload default-branch archive) into
+/// `dest`. Guardrails: absolute paths and `..` components are dropped, and
+/// the total extracted size is capped at [`SOURCE_EXTRACT_CAP`].
+fn extract_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    let mut total: u64 = 0;
+    let entries = archive.entries().map_err(|e| format!("tar: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("tar: {e}"))?;
+        let path = entry.path().map_err(|e| format!("tar: {e}"))?.into_owned();
+        let cleaned: PathBuf = path
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .collect();
+        if cleaned.as_os_str().is_empty() {
+            continue;
+        }
+        if entry.header().entry_type().is_dir() {
+            let _ = std::fs::create_dir_all(dest.join(&cleaned));
+            continue;
+        }
+        let size = entry.size();
+        if total + size > SOURCE_EXTRACT_CAP {
+            continue;
+        }
+        let target = dest.join(&cleaned);
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if entry.unpack(&target).is_ok() {
+            total += size;
+        }
+    }
+    Ok(())
+}
+
+/// codeload archives carry a single `<repo>-<ref>/` root; move its children
+/// up one level so the staged tree starts at the repo root.
+fn flatten_single_root(dir: &Path) {
+    let Ok(mut entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let first = match entries.next() {
+        Some(Ok(e)) => e.path(),
+        _ => return,
+    };
+    if entries.next().is_some() || !first.is_dir() {
+        return;
+    }
+    if let Ok(children) = std::fs::read_dir(&first) {
+        for child in children.filter_map(|c| c.ok()) {
+            let name = child.file_name();
+            let _ = std::fs::rename(child.path(), dir.join(&name));
+        }
+    }
+    let _ = std::fs::remove_dir(&first);
+}
+
+fn dir_has_java(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().map(|x| x == "java").unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// `auto-porter verify` — three layers (spec §6). Single-artifact-set form:

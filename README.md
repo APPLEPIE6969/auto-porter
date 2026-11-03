@@ -47,8 +47,11 @@ cargo run -p cli -- port tests/fixtures/jars/moreassets-fabric-2.1.0.jar --data-
 # from its pinned CDN URL, sha1-verified against the index, and ported
 # through the full pipeline (resource packs are recorded for the launcher
 # import; CurseForge id pairs are recorded honestly — the CF API is
-# key-gated). With horizon-port-pack installed the upstream
-# `import <archive> <work>` flow is used instead.
+# key-gated). When the CDN URL is a Modrinth link, the mod's upstream Java
+# source is also fetched from the GitHub repo its Modrinth page links and
+# fed to the LLM fallback as real context (recorded per mod as
+# "code_source" in port-pack-summary.json). With horizon-port-pack
+# installed the upstream `import <archive> <work>` flow is used instead.
 cargo run -p cli -- port-pack path/to/modpack --horizon-revision <SHA> --output ./output/
 
 # Verify: --static / --compile / --parity / --in-game

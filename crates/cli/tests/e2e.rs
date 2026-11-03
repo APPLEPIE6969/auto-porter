@@ -6,6 +6,11 @@ use shared::config::PorterConfig;
 use shared::report::{CheckStatus, Overall};
 use std::path::{Path, PathBuf};
 
+/// Tests that touch process-global env vars (OPENAI_API_KEY,
+/// AUTO_PORTER_MODRINTH_API, ...) serialize on this — cargo runs tests in
+/// parallel threads and set_var/remove_var races are UB-adjacent.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn ws(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../")
@@ -69,6 +74,8 @@ fn full_pipeline_on_veinminer_fixture() {
         output: out_dir.clone(),
         verbose: false,
         hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
     };
 
     let ported = port(&jar, &cfg, &opts).expect("port succeeds");
@@ -120,6 +127,8 @@ fn data_only_mode_skips_code_generation() {
         output: out_dir.clone(),
         verbose: false,
         hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
     };
     let ported = port(&jar, &cfg, &opts).expect("data-only port");
     assert!(out_dir.join("moreassets.hmod").is_file());
@@ -144,6 +153,7 @@ fn llm_retries_through_nvidia_degraded_400s() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    let _env = ENV_LOCK.lock().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let requests = Arc::new(AtomicUsize::new(0));
@@ -189,6 +199,8 @@ fn llm_retries_through_nvidia_degraded_400s() {
         output: out_dir.clone(),
         verbose: false,
         hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
     };
 
     let ported = port(&jar, &cfg, &opts);
@@ -350,6 +362,8 @@ fn mrpack_manifest_mods_are_downloaded_sha1_verified_and_ported() {
         output: out_dir.clone(),
         verbose: false,
         hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
     };
     let summary = auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack");
     let made = hits.load(std::sync::atomic::Ordering::SeqCst);
@@ -431,6 +445,8 @@ fn mrpack_sha1_mismatch_is_recorded_and_not_ported() {
         output: out_dir.clone(),
         verbose: false,
         hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
     };
     let summary =
         auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack runs");
@@ -489,6 +505,8 @@ fn curseforge_manifest_mods_are_recorded_honestly() {
         output: out_dir.clone(),
         verbose: false,
         hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
     };
     let summary =
         auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack runs");
@@ -540,6 +558,454 @@ fn verify_rejects_foreign_top_level_entries_in_hnmod() {
         .issues
         .iter()
         .any(|i| i.code == "top_level_entry" && i.message.contains("mod.wasm")));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Build a minimal Java class file (JVMS ch. 4) carrying one runtime-visible
+/// class annotation: `@Mixin(targets = "<target>")`. Enough for the
+/// decompose mixin extractor — no javac needed in the sandbox.
+fn mixin_class_bytes(this: &str, target: &str) -> Vec<u8> {
+    let utf8 = |s: &str| {
+        let mut v = vec![1u8];
+        v.extend_from_slice(&(s.len() as u16).to_be_bytes());
+        v.extend_from_slice(s.as_bytes());
+        v
+    };
+    let class = |idx: u16| {
+        let mut v = vec![7u8];
+        v.extend_from_slice(&idx.to_be_bytes());
+        v
+    };
+    let cp: Vec<Vec<u8>> = vec![
+        utf8(this),                                  // 1
+        class(1),                                    // 2 this_class
+        utf8("java/lang/Object"),                    // 3
+        class(3),                                    // 4 super_class
+        utf8("Lorg/spongepowered/asm/mixin/Mixin;"), // 5 annotation type
+        utf8("targets"),                             // 6 element name
+        utf8(target),                                // 7 element value
+        utf8("RuntimeVisibleAnnotations"),           // 8 attribute name
+    ];
+    let mut out = Vec::new();
+    out.extend_from_slice(&0xCAFEBABEu32.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes()); // minor
+    out.extend_from_slice(&52u16.to_be_bytes()); // major
+    out.extend_from_slice(&((cp.len() + 1) as u16).to_be_bytes());
+    for entry in &cp {
+        out.extend_from_slice(entry);
+    }
+    out.extend_from_slice(&0x0021u16.to_be_bytes()); // public super
+    out.extend_from_slice(&2u16.to_be_bytes()); // this_class
+    out.extend_from_slice(&4u16.to_be_bytes()); // super_class
+    out.extend_from_slice(&0u16.to_be_bytes()); // interfaces
+    out.extend_from_slice(&0u16.to_be_bytes()); // fields
+    out.extend_from_slice(&0u16.to_be_bytes()); // methods
+    out.extend_from_slice(&1u16.to_be_bytes()); // attributes
+                                                // RuntimeVisibleAnnotations: 1 annotation, 1 element ('s' string value)
+    let payload_len: u32 = 2 + 2 + 2 + 2 + 1 + 2;
+    out.extend_from_slice(&8u16.to_be_bytes());
+    out.extend_from_slice(&payload_len.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes()); // num annotations
+    out.extend_from_slice(&5u16.to_be_bytes()); // type index
+    out.extend_from_slice(&1u16.to_be_bytes()); // element pairs
+    out.extend_from_slice(&6u16.to_be_bytes()); // "targets"
+    out.push(b's');
+    out.extend_from_slice(&7u16.to_be_bytes());
+    out
+}
+
+#[test]
+fn sibling_jars_resolve_cross_mod_mixin_targets() {
+    // A compat mixin in jar A targets an API class that lives in jar B of
+    // the same pack. Decomposing A alone must flag the target (spec §2
+    // gate); the pack flow, which sees every sibling jar, must not.
+    let tmp = std::env::temp_dir().join(format!("ap-pack-classes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let mixin_jar = tmp.join("compat-mod.jar");
+    write_zip(
+        &mixin_jar,
+        &[(
+            "com/test/CompatMixin.class",
+            mixin_class_bytes("com/test/CompatMixin", "com/other/Foo"),
+        )],
+    );
+    // the sibling jar that actually carries the targeted class
+    let api_jar = tmp.join("api-mod.jar");
+    write_zip(
+        &api_jar,
+        &[(
+            "com/other/Foo.class",
+            mixin_class_bytes("com/other/Foo", "com/other/Foo"),
+        )],
+    );
+    // an LWJGL-targeting mixin: Minecraft always ships LWJGL on the runtime
+    // classpath, so the target resolves even without a sibling jar
+    let lwjgl_jar = tmp.join("input-mod.jar");
+    write_zip(
+        &lwjgl_jar,
+        &[(
+            "com/test/GlfwMixin.class",
+            mixin_class_bytes("com/test/GlfwMixin", "org/lwjgl/glfw/GLFW"),
+        )],
+    );
+
+    // decompose alone: com/other/Foo is unknown, org/lwjgl resolves
+    let alone = decompose::decompose(&mixin_jar).expect("decompose");
+    assert!(
+        alone
+            .gate_errors
+            .iter()
+            .any(|e| e.message.contains("com/other/Foo")),
+        "single-jar decompose must flag the cross-mod target"
+    );
+    let lwjgl = decompose::decompose(&lwjgl_jar).expect("decompose");
+    assert!(
+        lwjgl.gate_errors.is_empty(),
+        "org/lwjgl ships with Minecraft and must resolve: {:?}",
+        lwjgl.gate_errors
+    );
+    // decompose_with the sibling class listed: resolves
+    let with_pack = decompose::decompose_with(&mixin_jar, &["com/other/Foo".to_string()])
+        .expect("decompose_with");
+    assert!(
+        with_pack.gate_errors.is_empty(),
+        "the pack class index must resolve the target: {:?}",
+        with_pack.gate_errors
+    );
+
+    // the pack flow itself: both jars together, no unknown-target errors
+    let cfg = PorterConfig::default();
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir.clone(),
+        verbose: false,
+        hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
+    };
+    let summary = auto_porter_lib::port_pack(&tmp, &cfg, &opts, true).expect("port-pack");
+    assert_eq!(summary["ported"], 3, "every jar in the dir ports");
+    // mod ids are the sanitized jar stems
+    let reports: Vec<serde_json::Value> = ["compat_mod", "input_mod"]
+        .iter()
+        .map(|id| {
+            serde_json::from_str(
+                &std::fs::read_to_string(out_dir.join(format!("{id}-report.json"))).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    for rep in &reports {
+        assert!(
+            !rep["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["error_type"] == "unknown_mixin_target"),
+            "no false-positive mixin-target errors inside the pack: {}",
+            rep["mod_id"]
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Serve canned responses by path prefix on a local port (Modrinth API /
+/// codeload / CDN stand-ins for the source-fetch e2e).
+fn serve_by_path(routes: Vec<(&'static str, Vec<u8>)>) -> std::net::SocketAddr {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let req = String::from_utf8_lossy(&buf);
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+            let hit = routes
+                .iter()
+                .find(|(prefix, _)| path.starts_with(prefix))
+                .map(|(_, body)| body.clone())
+                .unwrap_or_else(|| b"not found".to_vec());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                hit.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(&hit);
+        }
+    });
+    addr
+}
+
+/// One raw ustar header + data (tar::Builder refuses `../` names, and the
+/// whole point of one entry is to be adversarial).
+fn push_tar_entry(buf: &mut Vec<u8>, name: &str, data: &[u8]) {
+    let mut h = [0u8; 512];
+    h[..name.len()].copy_from_slice(name.as_bytes());
+    h[100..108].copy_from_slice(b"0000644\0");
+    h[108..116].copy_from_slice(b"0000000\0");
+    h[116..124].copy_from_slice(b"0000000\0");
+    h[124..136].copy_from_slice(format!("{:011o}\0", data.len()).as_bytes());
+    h[136..148].copy_from_slice(b"00000000000\0");
+    h[156] = b'0'; // regular file
+    h[257..263].copy_from_slice(b"ustar\0");
+    h[263..265].copy_from_slice(b"00");
+    let sum: u32 = h.iter().map(|b| *b as u32).sum();
+    h[148..156].copy_from_slice(format!("{:06o}\0 ", sum).as_bytes());
+    buf.extend_from_slice(&h);
+    buf.extend_from_slice(data);
+    let pad = (512 - data.len() % 512) % 512;
+    buf.extend(vec![0u8; pad]);
+}
+
+/// A gzipped tarball like codeload's default-branch archive (one `<repo>-<ref>/`
+/// root), with the given text files.
+fn gz_tar(entries: &[(&str, &str)]) -> Vec<u8> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use tar::Builder;
+    type TarEntry<'a> = &'a (&'a str, &'a str);
+    let (evil, normal): (Vec<TarEntry>, Vec<TarEntry>) =
+        entries.iter().partition(|(p, _)| p.starts_with("../"));
+    let enc = GzEncoder::new(Vec::new(), Compression::fast());
+    let mut builder = Builder::new(enc);
+    for (path, content) in normal {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, *path, content.as_bytes())
+            .unwrap();
+    }
+    let mut inner = builder.into_inner().unwrap().finish().unwrap();
+    for (path, content) in evil {
+        push_tar_entry(&mut inner, path, content.as_bytes());
+    }
+    inner.extend_from_slice(&[0u8; 1024]); // two zero blocks terminate the archive
+    inner
+}
+
+#[test]
+fn mrpack_fetches_upstream_source_from_modrinth_linked_github() {
+    // Spec §7 + the Modrinth page's own data: the CDN URL embeds the project
+    // id, the public API carries `source_url`, and for GitHub repos the
+    // default-branch tarball is fetchable without a key. The fetched source
+    // must be staged under the pack work dir and every non-fetchable case
+    // (no link, non-GitHub host) recorded honestly.
+    let jar_one = std::fs::read(ws("tests/fixtures/jars/veinminer-fabric-1.0.0.jar")).unwrap();
+    let jar_two = std::fs::read(ws("tests/fixtures/jars/torchtools-neoforge-0.3.1.jar")).unwrap();
+    let jar_three = std::fs::read(ws("tests/fixtures/jars/moreassets-fabric-2.1.0.jar")).unwrap();
+    let sha = |b: &[u8]| sha1_hex_of(b);
+
+    let cdn = serve_by_path(vec![
+        ("/data/AAAA0001/", jar_one.clone()),
+        ("/data/AAAA0002/", jar_two.clone()),
+        ("/data/AAAA0003/", jar_three.clone()),
+    ]);
+    let api = serve_by_path(vec![
+        (
+            "/v2/project/AAAA0001",
+            br#"{"slug":"veinminer","source_url":"https://github.com/example/veinminer"}"#.to_vec(),
+        ),
+        (
+            "/v2/project/AAAA0002",
+            br#"{"slug":"torchtools","source_url":null}"#.to_vec(),
+        ),
+        (
+            "/v2/project/AAAA0003",
+            br#"{"slug":"moreassets","source_url":"https://gitlab.com/other/assets"}"#.to_vec(),
+        ),
+    ]);
+    let tarball = gz_tar(&[
+        ("veinminer-main/src/main/java/net/example/Tick.java",
+         "package net.example;\n\npublic class Tick {\n    // real upstream behaviour\n    void onTick() { keep(); }\n    void keep() {}\n}\n"),
+        ("veinminer-main/README.md", "docs\n"),
+        ("../evil.txt", "must never escape"),
+    ]);
+    let gh = serve_by_path(vec![("/example/veinminer/tar.gz/HEAD", tarball)]);
+
+    let _env = ENV_LOCK.lock().unwrap();
+    std::env::set_var("AUTO_PORTER_MODRINTH_API", format!("http://{api}"));
+    std::env::set_var("AUTO_PORTER_GITHUB_CODELOAD", format!("http://{gh}"));
+
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "gameVersion": "1.21.1",
+        "name": "e2e-src",
+        "files": [
+            {
+                "path": "mods/one.jar",
+                "hashes": {"sha1": sha(&jar_one)},
+                "fileSize": jar_one.len(),
+                "downloads": [format!("http://{cdn}/data/AAAA0001/versions/wip/one.jar")]
+            },
+            {
+                "path": "mods/two.jar",
+                "hashes": {"sha1": sha(&jar_two)},
+                "fileSize": jar_two.len(),
+                "downloads": [format!("http://{cdn}/data/AAAA0002/versions/wip/two.jar")]
+            },
+            {
+                "path": "mods/three.jar",
+                "hashes": {"sha1": sha(&jar_three)},
+                "fileSize": jar_three.len(),
+                "downloads": [format!("http://{cdn}/data/AAAA0003/versions/wip/three.jar")]
+            }
+        ]
+    });
+    let tmp = std::env::temp_dir().join(format!("ap-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let pack_path = tmp.join("e2e-src.mrpack");
+    write_zip(
+        &pack_path,
+        &[("modrinth.index.json", serde_json::to_vec(&index).unwrap())],
+    );
+
+    let cfg = PorterConfig::default();
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir.clone(),
+        verbose: false,
+        hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
+    };
+    let summary = auto_porter_lib::port_pack(&pack_path, &cfg, &opts, true).expect("port-pack");
+    std::env::remove_var("AUTO_PORTER_MODRINTH_API");
+    std::env::remove_var("AUTO_PORTER_GITHUB_CODELOAD");
+
+    let mods = summary["results"][0]["mods"].as_array().unwrap();
+    assert_eq!(mods.len(), 3, "every code mod listed");
+
+    let one = mods.iter().find(|m| m["mod"] == "mods/one.jar").unwrap();
+    assert_eq!(one["code_source"]["status"], "fetched");
+    assert_eq!(one["code_source"]["repo"], "example/veinminer");
+    assert_eq!(one["mod_id"], "veinminer", "the mod still ports");
+    // the source tree is staged (flattened out of the codeload root)
+    let staged = out_dir.join("e2e-src/sources/one");
+    assert!(
+        staged.join("src/main/java/net/example/Tick.java").is_file(),
+        "real source staged under the pack work dir"
+    );
+    assert!(
+        !tmp.join("evil.txt").exists(),
+        "a `../` tar entry must never escape the staging dir"
+    );
+    // and it is real, indexed upstream source the LLM prompt can use
+    let sources = port_code::sources::JavaSources::load(&staged);
+    let snippet = sources
+        .snippet_for("net.example.Tick", 10_000)
+        .expect("source indexed by package + stem");
+    assert!(snippet.contains("onTick"));
+    assert!(snippet.contains("real upstream behaviour"));
+
+    let two = mods.iter().find(|m| m["mod"] == "mods/two.jar").unwrap();
+    assert_eq!(two["code_source"]["status"], "no-source-url");
+    let three = mods.iter().find(|m| m["mod"] == "mods/three.jar").unwrap();
+    assert_eq!(three["code_source"]["status"], "non-github");
+    assert_eq!(
+        three["code_source"]["repo"],
+        "https://gitlab.com/other/assets"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn llm_prompt_carries_real_upstream_source() {
+    // The point of the source fetch: when the mod's GitHub source is staged,
+    // the LLM fallback request must carry the actual upstream Java code (not
+    // just the class/method inventory the class-file AST can produce).
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let _env = ENV_LOCK.lock().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let store = captured.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = vec![0u8; 65536];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            if let Some(body) = req.split("\r\n\r\n").nth(1) {
+                *store.lock().unwrap() = body.to_string();
+            }
+            let body = r#"{"choices":[{"message":{"content":"/// ported with upstream source\fn on_player_tick() {}"}}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    // stage a real source tree matching the fixture's tick class
+    let tmp = std::env::temp_dir().join(format!("ap-llm-src-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let src = tmp.join("src/main/java/com/example/chunkcourier");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("ChunkCourier.java"),
+        "package com.example.chunkcourier;\n\npublic class ChunkCourier {\n    // UPSTREAM_ON_TICK_MARKER_42\n    void onPlayerTick() { sendChunks(); }\n}\n",
+    )
+    .unwrap();
+
+    let jar = ws("tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar");
+    std::env::set_var("OPENAI_API_KEY", "test-key-for-source-prompt");
+    let mut cfg = PorterConfig::default();
+    cfg.llm.provider = "openai".to_string();
+    cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir,
+        verbose: false,
+        hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: Some(tmp.clone()),
+    };
+    let ported = port(&jar, &cfg, &opts);
+    std::env::remove_var("OPENAI_API_KEY");
+
+    let ported = ported.expect("port succeeds");
+    let tick: Vec<_> = ported
+        .report
+        .features
+        .iter()
+        .filter(|f| f.feature_id.contains("playertickevent"))
+        .collect();
+    assert_eq!(tick.len(), 1);
+    assert_eq!(
+        tick[0].status,
+        shared::report::FeatureStatus::Ported,
+        "tick feature ported through the source-aware LLM path"
+    );
+    let body = captured.lock().unwrap().clone();
+    assert!(
+        body.contains("UPSTREAM_ON_TICK_MARKER_42"),
+        "the LLM request must carry the real upstream source, got: {body:.500}"
+    );
+    assert!(
+        body.contains("real upstream source of com/example/chunkcourier/ChunkCourier"),
+        "the snippet is attributed to its class"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

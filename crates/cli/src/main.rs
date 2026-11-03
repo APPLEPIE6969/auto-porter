@@ -57,6 +57,12 @@ enum Command {
         /// Stop after the data phase (used by CI)
         #[arg(long)]
         data_only: bool,
+        /// Directory of real upstream Java sources (e.g. the mod's GitHub
+        /// repo clone) — fed to the LLM fallback instead of decompiled
+        /// signatures. The port-pack flow stages this automatically from
+        /// the Modrinth metadata.
+        #[arg(long)]
+        source: Option<PathBuf>,
         #[arg(long, default_value = "./output/")]
         output: PathBuf,
     },
@@ -125,6 +131,7 @@ fn run(cli: Cli, cfg: PorterConfig) -> i32 {
             tier,
             horizon_revision,
             data_only,
+            source,
             output,
         } => {
             let _ = tier; // auto is the only mode; explicit tiers land with the
@@ -135,6 +142,8 @@ fn run(cli: Cli, cfg: PorterConfig) -> i32 {
                 output,
                 verbose: cli.verbose,
                 hooks_json: cli.hooks_json,
+                pack_classes: Vec::new(),
+                source_dir: source,
             };
             match auto_porter_lib::port(&jar, &cfg, &opts) {
                 Ok(out) => {
@@ -163,6 +172,8 @@ fn run(cli: Cli, cfg: PorterConfig) -> i32 {
                 output,
                 verbose: cli.verbose,
                 hooks_json: cli.hooks_json,
+                pack_classes: Vec::new(),
+                source_dir: None,
             };
             match auto_porter_lib::port_pack(&path, &cfg, &opts, continue_on_error) {
                 Ok(summary) => {
