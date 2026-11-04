@@ -993,7 +993,7 @@ fn llm_prompt_carries_real_upstream_source() {
             if let Some(body) = req.split("\r\n\r\n").nth(1) {
                 *store.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             }
-            let body = r#"{"choices":[{"message":{"content":"/// ported with upstream source\fn on_player_tick() {}"}}]}"#;
+            let body = r#"{"choices":[{"message":{"content":"/// ported with upstream source\nfn on_player_tick() {}"}}]}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -1052,6 +1052,190 @@ fn llm_prompt_carries_real_upstream_source() {
     assert!(
         body.contains("real upstream source of com/example/chunkcourier/ChunkCourier"),
         "the snippet is attributed to its class"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn llm_repairs_rejected_output() {
+    // The self-repair loop: a candidate that fails the static lint must be
+    // retried WITH the validator reason in the prompt, and a repaired
+    // success is recorded as such in the outcome detail.
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    let _env = env_lock();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let store = bodies.clone();
+    let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let raw = read_http_request(&mut stream);
+            let req = String::from_utf8_lossy(&raw).to_string();
+            if let Some(body) = req.split("\r\n\r\n").nth(1) {
+                store
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(body.to_string());
+            }
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // attempt 1: lint-dirty (`unsafe`); attempt 2: clean
+            let code = if n == 0 {
+                "fn on_player_tick(&mut self) { unsafe { let _x = 1; } }"
+            } else {
+                "/// ported tick hook.\nfn on_player_tick(&mut self) {}"
+            };
+            let payload = serde_json::json!({
+                "choices": [{"message": {"content": code}}]
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let jar = ws("tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar");
+    let tmp = std::env::temp_dir().join(format!("ap-llm-repair-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    std::env::set_var("OPENAI_API_KEY", "test-key-for-repair");
+    let mut cfg = PorterConfig::default();
+    cfg.llm.provider = "openai".to_string();
+    cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+    cfg.llm.retry_delay_ms = 1;
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir,
+        verbose: false,
+        hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
+    };
+    let ported = port(&jar, &cfg, &opts);
+    let made = served.load(std::sync::atomic::Ordering::SeqCst);
+    std::env::remove_var("OPENAI_API_KEY");
+
+    let ported = ported.expect("port succeeds");
+    let tick: Vec<_> = ported
+        .report
+        .features
+        .iter()
+        .filter(|f| f.feature_id.contains("playertickevent"))
+        .collect();
+    assert_eq!(tick.len(), 1);
+    assert_eq!(
+        tick[0].status,
+        shared::report::FeatureStatus::Ported,
+        "repaired candidate ends PORTED"
+    );
+    assert!(
+        tick[0].detail.contains("repaired after 1 rejected attempt"),
+        "repair recorded in the outcome detail: {}",
+        tick[0].detail
+    );
+    let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(made, 2, "one rejected attempt + one repaired attempt");
+    assert_eq!(bodies.len(), 2, "every request body captured");
+    assert!(
+        !bodies[0].contains("PREVIOUS ATTEMPT REJECTED"),
+        "the first attempt carries no rejection feedback"
+    );
+    assert!(
+        bodies[1].contains("PREVIOUS ATTEMPT REJECTED")
+            && bodies[1].contains("`unsafe` is forbidden"),
+        "the validator reason must reach the model on the retry"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn llm_infeasible_sentinel_is_honest_skip() {
+    // The contract's escape hatch: when the model returns exactly
+    // // PORT_INFEASIBLE, the feature is skipped honestly — no error entry,
+    // no retry burn, no invented no-op code.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let _env = env_lock();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = vec![0u8; 16384];
+            let _ = stream.read(&mut buf);
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = r#"{"choices":[{"message":{"content":"// PORT_INFEASIBLE"}}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let jar = ws("tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar");
+    let tmp = std::env::temp_dir().join(format!("ap-llm-infeasible-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    std::env::set_var("OPENAI_API_KEY", "test-key-for-infeasible");
+    let mut cfg = PorterConfig::default();
+    cfg.llm.provider = "openai".to_string();
+    cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+    cfg.llm.retry_delay_ms = 1;
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir,
+        verbose: false,
+        hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
+    };
+    let ported = port(&jar, &cfg, &opts);
+    let made = served.load(std::sync::atomic::Ordering::SeqCst);
+    std::env::remove_var("OPENAI_API_KEY");
+
+    let ported = ported.expect("port succeeds");
+    let tick: Vec<_> = ported
+        .report
+        .features
+        .iter()
+        .filter(|f| f.feature_id.contains("playertickevent"))
+        .collect();
+    assert_eq!(tick.len(), 1);
+    assert_eq!(
+        tick[0].status,
+        shared::report::FeatureStatus::Skipped,
+        "sentinel is an honest skip, not a port"
+    );
+    assert!(
+        tick[0].detail.contains("PORT_INFEASIBLE"),
+        "detail names the sentinel: {}",
+        tick[0].detail
+    );
+    assert_eq!(made, 1, "the sentinel must not burn retry attempts");
+    assert!(
+        !ported
+            .report
+            .errors
+            .iter()
+            .any(|e| e.feature.as_deref() == Some(tick[0].feature_id.as_str())),
+        "an infeasible skip is not an error"
     );
 
     let _ = std::fs::remove_dir_all(&tmp);

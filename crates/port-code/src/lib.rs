@@ -90,9 +90,11 @@ pub fn port_code(
                     continue;
                 };
 
-                let generated = match feature.template.as_deref() {
+                let generated: Generated = match feature.template.as_deref() {
                     Some(template_name) => {
                         render_template(template_name, feature, hook, decomposed, verbose)
+                            .map(|code| Generated::Code { code, note: None })
+                            .unwrap_or(Generated::Failed)
                     }
                     None => llm_fallback(
                         feature,
@@ -106,25 +108,29 @@ pub fn port_code(
                 };
 
                 match generated {
-                    Some(code) => {
+                    Generated::Code { code, note } => {
                         if verify_lint(&code, &mut errors, &feature.id) {
                             let slug = module_slug(&feature.id);
                             modules.push((format!("{slug}.rs"), code));
                             if !hooks_used.iter().any(|h| h == hook) {
                                 hooks_used.push(hook.clone());
                             }
+                            let mut detail = format!(
+                                "generated from {}",
+                                feature
+                                    .template
+                                    .clone()
+                                    .unwrap_or_else(|| "LLM fallback".to_string())
+                            );
+                            if let Some(note) = note {
+                                detail.push_str(&format!(" ({note})"));
+                            }
                             outcomes.push(FeatureOutcome {
                                 feature_id: feature.id.clone(),
                                 kind: feature.kind,
                                 tier: feature.tier,
                                 status: FeatureStatus::Ported,
-                                detail: format!(
-                                    "generated from {}",
-                                    feature
-                                        .template
-                                        .clone()
-                                        .unwrap_or_else(|| "LLM fallback".to_string())
-                                ),
+                                detail,
                             });
                         } else {
                             lint_clean = false;
@@ -137,7 +143,19 @@ pub fn port_code(
                             });
                         }
                     }
-                    None => outcomes.push(FeatureOutcome {
+                    Generated::Infeasible => {
+                        outcomes.push(FeatureOutcome {
+                            feature_id: feature.id.clone(),
+                            kind: feature.kind,
+                            tier: feature.tier,
+                            status: FeatureStatus::Skipped,
+                            detail: format!(
+                                "model declared the feature infeasible for hook `{}` (// PORT_INFEASIBLE); honest skip — human design required",
+                                hook.name
+                            ),
+                        });
+                    }
+                    Generated::Failed => outcomes.push(FeatureOutcome {
                         feature_id: feature.id.clone(),
                         kind: feature.kind,
                         tier: feature.tier,
@@ -295,6 +313,18 @@ fn render_template(
     Some(code)
 }
 
+/// What one feature's code generation produced.
+enum Generated {
+    /// A candidate that passed the structural validation and the shared
+    /// lint (template output skips the LLM-specific checks).
+    Code { code: String, note: Option<String> },
+    /// The model invoked the infeasible sentinel: an honest skip, recorded
+    /// without an error entry.
+    Infeasible,
+    /// Generation failed; `errors` carries the reasons.
+    Failed,
+}
+
 fn llm_fallback(
     feature: &Feature,
     hook: &HookRef,
@@ -303,7 +333,7 @@ fn llm_fallback(
     cfg: &PorterConfig,
     sources: &sources::JavaSources,
     errors: &mut Vec<PortError>,
-) -> Option<String> {
+) -> Generated {
     let java_ir = java_ir_for(feature, decomposed);
     // When the mod's real upstream source was fetched from its GitHub repo,
     // hand the model the actual code of the feature's classes — decompiled
@@ -330,6 +360,11 @@ fn llm_fallback(
 
     let max_attempts = cfg.llm.effective_max_attempts();
     let mut attempt = 0;
+    // Validator reason fed back into the prompt on the next attempt, so a
+    // rejected candidate gets repaired instead of re-rolling the dice on an
+    // identical prompt.
+    let mut rejection: Option<String> = None;
+    let mut rejected_attempts = 0usize;
     while attempt < max_attempts {
         let req = llm::LlmRequest {
             mod_id: decomposed.metadata.id.clone(),
@@ -343,34 +378,60 @@ fn llm_fallback(
             hook_signature: hook_signature.clone(),
             relevant_helpers: helpers.clone(),
             few_shot_examples: examples.clone(),
+            rejection: rejection.clone(),
         };
         match llm::call(&req, cfg) {
             llm::LlmOutcome::Code(code) => {
-                let issues = shared_lint(&code);
-                if issues.is_empty() {
-                    return Some(format!(
-                        "// LLM-generated for {} (hook `{}`), reviewed by the static lint only\n{}",
-                        feature.id, hook.name, code
-                    ));
+                // The sentinel is only honest when it is the WHOLE response;
+                // `call` already normalized, so an exact match here means the
+                // model deliberately declined the feature.
+                if llm::is_infeasible(&code) {
+                    return Generated::Infeasible;
                 }
+                // Structural validation first (fences, brace balance,
+                // sentinel discipline), then the shared lint; the first
+                // reason is what the model sees on the retry.
+                let mut issues = llm::structural_issues(&code);
+                issues.extend(shared_lint(&code));
+                if issues.is_empty() {
+                    let note = if rejected_attempts > 0 {
+                        Some(format!(
+                            "repaired after {rejected_attempts} rejected attempt(s)"
+                        ))
+                    } else {
+                        None
+                    };
+                    return Generated::Code {
+                        code: format!(
+                            "// LLM-generated for {} (hook `{}`), reviewed by the static lint only\n{}",
+                            feature.id, hook.name, code
+                        ),
+                        note,
+                    };
+                }
+                rejected_attempts += 1;
+                let reason = issues[0].1.clone();
                 errors.push(
                     PortError::new(
                         Phase::PortCode,
                         ErrorType::CompileError,
-                        format!("LLM output failed the static lint: {}", issues[0].1),
+                        format!("LLM output rejected: {reason}"),
                     )
                     .for_feature(feature.id.clone()),
                 );
+                rejection = Some(reason);
             }
             llm::LlmOutcome::Unavailable(e) => {
                 errors.push(e.for_feature(feature.id.clone()));
-                return None;
+                return Generated::Failed;
             }
             // Auth / bad-model / malformed-request: retrying cannot heal it.
             llm::LlmOutcome::Fatal(e) => {
                 errors.push(e.for_feature(feature.id.clone()));
-                return None;
+                return Generated::Failed;
             }
+            // Transport / rate-limit / empty body: not the model's fault, so
+            // any pending rejection feedback stays for the next attempt.
             llm::LlmOutcome::Timeout(e) | llm::LlmOutcome::Failed(e) => {
                 errors.push(e.for_feature(feature.id.clone()));
             }
@@ -382,7 +443,7 @@ fn llm_fallback(
             std::thread::sleep(Duration::from_millis(cfg.llm.retry_delay_ms));
         }
     }
-    None
+    Generated::Failed
 }
 
 /// Pseudo-IR of the Java methods a feature came from (class/method inventory

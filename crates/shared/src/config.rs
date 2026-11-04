@@ -95,7 +95,7 @@ impl Default for LlmCfg {
             model: "claude-sonnet-5-5".to_string(),
             max_retries: 3,
             timeout_secs: 60,
-            temperature: 0.1,
+            temperature: 0.0, // fully deterministic sampling
             reasoning_effort: "high".to_string(),
             retry_delay_ms: 1000,
             base_url: None,
