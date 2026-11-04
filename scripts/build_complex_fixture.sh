@@ -311,3 +311,11 @@ cp -r "$C/res/." "$WORK/classes/"
 mkdir -p "$FIX"
 (cd "$WORK/classes" && "$JDK/jar" cf "$FIX/chunkcourier-neoforge-2.0.0.jar" .)
 echo "built $FIX/chunkcourier-neoforge-2.0.0.jar"
+
+# Keep the committed Java sources in sync with the jar: the LLM smoke and
+# the soak feed them to the model via `port --source` so JAVA BEHAVIOUR
+# carries the real upstream code instead of a decompiled signature line.
+mkdir -p "$FIX/../sources"
+rm -rf "$FIX/../sources/chunkcourier"
+cp -r "$C" "$FIX/../sources/chunkcourier"
+echo "synced $FIX/../sources/chunkcourier"

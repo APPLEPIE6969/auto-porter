@@ -48,10 +48,14 @@ class Handler(BaseHTTPRequestHandler):
                     b'"Function id \'eb8265c4-e47d-4047-918d-c12746cc2cee\': '
                     b'DEGRADED function cannot be invoked"}')
         else:
+            content = "/// Generated hook implementation.\nfn noop() {}"
+            if MODE == "good":
+                # Return the contents of a response file verbatim — used by
+                # local sanity runs to check the prompt/validation pipeline
+                # against contract-conforming code.
+                content = open(sys.argv[5]).read()
             body = json.dumps({
-                "choices": [{"message": {"content":
-                    "/// Generated hook implementation.\nfn noop() {}"
-                }}]
+                "choices": [{"message": {"content": content}}]
             }).encode()
             self.send_response(200)
 

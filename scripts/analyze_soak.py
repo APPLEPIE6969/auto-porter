@@ -141,11 +141,22 @@ def response_shape(raw: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("trace")
+    ap.add_argument("trace", help="trace.jsonl file OR a soak directory with per-run traces")
     ap.add_argument("--json", dest="out_json")
     ap.add_argument("--save-calls", dest="save_calls")
     args = ap.parse_args()
     sigs = load_signatures()
+
+    traces = []
+    p = Path(args.trace)
+    if p.is_dir():
+        traces = sorted(p.glob("**/trace.jsonl"))
+    else:
+        traces = [p]
+    if not traces:
+        print("no trace files found")
+        return 1
+    print(f"trace files: {len(traces)}")
 
     shapes = collections.Counter()
     outcomes = collections.Counter()
@@ -156,7 +167,6 @@ def main() -> int:
     lat = []
     calls = []
     runs = collections.Counter()  # prompt-key -> attempt count
-    per_run_calls = collections.defaultdict(list)
 
     for line in open(args.trace):
         line = line.strip()
@@ -179,8 +189,6 @@ def main() -> int:
         prompt = v.get("prompt") or ""
         m = re.search(r"Implement `([a-z_0-9]+)`", prompt)
         hook = m.group(1) if m else "?"
-        key = f"{hook}:{abs(hash(norm_ws(prompt))) % 10_000_000}"
-        per_run_calls[key].append(v)
         if v.get("outcome") == "code" and raw:
             exp = sigs.get("hooks", {}).get(hook, {}).get("signature")
             if exp:
@@ -191,8 +199,31 @@ def main() -> int:
             for issue in check_api_discipline(raw, sigs.get("host_methods", {})):
                 api_issues[issue] += 1
 
-    repaired = sum(1 for k, v in per_run_calls.items() if len(v) > 1)
-    first_try = sum(1 for k, v in per_run_calls.items() if len(v) == 1 and v[0].get("outcome") == "code")
+    repaired = 0
+    first_try = 0
+    run_count = 0
+    for tf in traces:
+        run_calls = []
+        for line in open(tf):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                run_calls.append(json.loads(line))
+            except Exception:
+                continue
+        if not run_calls:
+            continue
+        run_count += 1
+        ok_first = (
+            len(run_calls) == 1
+            and run_calls[0].get("outcome") == "code"
+            and response_shape(run_calls[0].get("raw_text") or "") == "clean"
+        )
+        if ok_first:
+            first_try += 1
+        elif len(run_calls) > 1:
+            repaired += 1
 
     def pct(x, total):
         return f"{100.0 * x / total:.1f}%" if total else "n/a"
@@ -205,9 +236,9 @@ def main() -> int:
     print(f"finish reasons: {dict(finish)}")
     print(f"signature conformance (code calls): {dict(sig_results)}")
     print(f"host-API discipline issues: {dict(api_issues) or 'none'}")
-    print(f"runs (distinct prompts): {len(per_run_calls)}  "
-          f"first-try ok: {first_try} ({pct(first_try, len(per_run_calls))})  "
-          f"needed retry: {repaired} ({pct(repaired, len(per_run_calls))})")
+    print(f"runs: {run_count}  "
+          f"first-try clean+sig-ok: {first_try} ({pct(first_try, run_count)})  "
+          f"needed retry: {repaired} ({pct(repaired, run_count)})")
     for e, c in errors.most_common(8):
         print(f"  error {c}x: {e}")
     if args.save_calls:
@@ -225,7 +256,7 @@ def main() -> int:
             "signature": dict(sig_results),
             "api_issues": dict(api_issues),
             "errors": dict(errors),
-            "runs": len(per_run_calls),
+            "runs": run_count,
             "first_try_ok": first_try,
             "retried": repaired,
             "latency_p50": sorted(lat)[len(lat) // 2] if lat else None,

@@ -113,10 +113,13 @@ jobs:
           fi
           # The real test: NVIDIA NIM with reasoning_effort=high, up to 100
           # attempts per request. The tick hook has no template, so success
-          # means the LLM fallback generated code that passed the static lint.
+          # means the LLM fallback generated code that passed the static lint
+          # AND matches the exact Hooks signature. The committed fixture
+          # sources give the model the real upstream Java behaviour.
           rm -rf target/llm-smoke
           bin/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
             --llm-provider nvidia --llm-model minimaxai/minimax-m3.1-flash \
+            --source tests/fixtures/sources/chunkcourier \
             --output target/llm-smoke
           python3 - <<'PY'
           import json, sys

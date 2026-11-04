@@ -52,10 +52,14 @@ jobs:
           for i in $(seq 1 "$n"); do
             id="s${{ matrix.shard }}-$(printf '%02d' "$i")"
             echo "=== run $id ==="
-            AUTO_PORTER_LLM_TRACE="$PWD/soak/trace.jsonl" \
+            mkdir -p "soak/$id"
+            # One trace file per run: the analyzer computes a first-try
+            # success rate per run instead of guessing attempt clusters.
+            AUTO_PORTER_LLM_TRACE="$PWD/soak/$id/trace.jsonl" \
               target/release/auto-porter port \
               tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
               --llm-provider nvidia --llm-model "${{ inputs.model }}" \
+              --source tests/fixtures/sources/chunkcourier \
               --output "soak/$id" \
               || echo "::warning::port failed for $id"
             sleep 2
