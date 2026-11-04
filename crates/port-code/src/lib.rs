@@ -5,7 +5,7 @@ pub mod llm;
 pub mod scenarios;
 pub mod sources;
 
-use shared::catalog::HookCatalog;
+use shared::catalog::{HookCatalog, HookSignature};
 use shared::config::PorterConfig;
 use shared::error::{ErrorType, Phase, PortError};
 use shared::report::{CheckStatus, CompileResult, FeatureOutcome, FeatureStatus};
@@ -339,24 +339,37 @@ fn llm_fallback(
     // hand the model the actual code of the feature's classes — decompiled
     // signatures alone lose the behaviour the port must replicate.
     let java_ir = upstream_source_context(&java_ir, feature, sources);
-    let hook_signature = catalog
-        .get(&hook.name)
-        .map(|d| {
-            format!(
-                "hook: {}\ncontract: {}\nhook_version: {}\ntarget: {}\nneoforge: {}\nside: {}",
-                d.name,
-                d.contract,
-                d.hook_version,
-                d.target.clone().unwrap_or_default(),
-                d.neoforge.clone().unwrap_or_default(),
-                d.side.clone().unwrap_or_default()
-            )
-        })
-        .unwrap_or_default();
+    // Ground truth when the signature table is attached: the EXACT trait
+    // method shape from the pinned Horizon revision. Without it, fall back
+    // to the catalog metadata block (hook name, contract, version).
+    let sig = catalog.signature(&hook.name);
+    let hook_signature = match sig {
+        Some(s) => s.signature.clone(),
+        None => catalog
+            .get(&hook.name)
+            .map(|d| {
+                format!(
+                    "hook: {}\ncontract: {}\nhook_version: {}\ntarget: {}\nneoforge: {}\nside: {}",
+                    d.name,
+                    d.contract,
+                    d.hook_version,
+                    d.target.clone().unwrap_or_default(),
+                    d.neoforge.clone().unwrap_or_default(),
+                    d.side.clone().unwrap_or_default()
+                )
+            })
+            .unwrap_or_default(),
+    };
+    let contract_notes = sig.map(contract_notes_text).unwrap_or_default();
     // The real catalog carries one global `helpers` list, not per-hook
-    // host_helpers — give the model the full registry so it can pick.
-    let helpers = catalog.helper_names().join(", ");
-    let examples = load_template("mixin_head.rs").unwrap_or_default();
+    // host_helpers — give the model the full registry so it can pick, with
+    // full signatures when known (names alone invite invented APIs).
+    let helpers = if catalog.host_methods.is_empty() {
+        catalog.helper_names().join(", ")
+    } else {
+        catalog.helper_signatures_text()
+    };
+    let examples = llm::FEW_SHOT.to_string();
 
     let max_attempts = cfg.llm.effective_max_attempts();
     let mut attempt = 0;
@@ -376,6 +389,7 @@ fn llm_fallback(
             hook_version: hook.hook_version,
             java_ir: java_ir.clone(),
             hook_signature: hook_signature.clone(),
+            contract_notes: contract_notes.clone(),
             relevant_helpers: helpers.clone(),
             few_shot_examples: examples.clone(),
             rejection: rejection.clone(),
@@ -389,9 +403,15 @@ fn llm_fallback(
                     return Generated::Infeasible;
                 }
                 // Structural validation first (fences, brace balance,
-                // sentinel discipline), then the shared lint; the first
-                // reason is what the model sees on the retry.
+                // sentinel discipline), then the exact-signature check, then
+                // the shared lint; the first reason is what the model sees
+                // on the retry.
                 let mut issues = llm::structural_issues(&code);
+                if let Some(expected) = sig.map(|s| s.signature.as_str()) {
+                    if let Some(reason) = llm::signature_issue(&code, expected) {
+                        issues.push((true, reason));
+                    }
+                }
                 issues.extend(shared_lint(&code));
                 if issues.is_empty() {
                     let note = if rejected_attempts > 0 {
@@ -444,6 +464,37 @@ fn llm_fallback(
         }
     }
     Generated::Failed
+}
+
+/// Ground truth printed under the signature in the HOOK CONTRACT: Horizon's
+/// own doc for the hook, the event struct's fields, and the Flow semantics —
+/// everything the model needs to use the hook without inventing anything.
+fn contract_notes_text(s: &HookSignature) -> String {
+    let mut out = String::new();
+    if !s.doc.is_empty() {
+        out.push_str("Horizon docs for this hook: ");
+        out.push_str(&s.doc);
+        out.push('\n');
+    }
+    if !s.event.is_empty() {
+        if s.event_fields.is_empty() {
+            out.push_str(&format!(
+                "Event struct `{}` has no fields — read nothing from `event`.\n",
+                s.event
+            ));
+        } else {
+            out.push_str(&format!(
+                "Event struct `{}` (#[non_exhaustive]; read fields, never construct):\n{}\n",
+                s.event, s.event_fields
+            ));
+        }
+    }
+    if s.returns_flow {
+        out.push_str(
+            "Return `Flow::Continue` normally; return `Flow::Cancel` to veto the game's default action and skip later mods.\n",
+        );
+    }
+    out
 }
 
 /// Pseudo-IR of the Java methods a feature came from (class/method inventory

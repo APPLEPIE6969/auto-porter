@@ -199,3 +199,34 @@ reference set — that is the modpack-sweep's job on CI.
 - `hooks/native-hooks.json` (the committed catalog snapshot) and
   `mixins_revision` in `porter.toml` are new config surface, documented in
   the file itself.
+
+## 8. Bundle bindability (open workstream)
+
+The generated `.hnmod` sources are valid Rust modules, but they do not yet
+use the bundle wiring real Horizon mods use. Verified against
+`horizon-rust/horizon@6beacfe9` (launcher `native_mods/{api,crates,inject}.rs`)
+and the `horizon-rust/horizon-mods` registry:
+
+- A registry bundle (`native/coords-hud`) is a plain helper module —
+  `fn coords_hud(game: &mut Game<'_>, batch: &mut HudBatch, ...)` — plus a
+  `[[injection]]` table with `target = <native hook path>`, `helper = "<file>"`
+  and `bindings = [{name, ty, value}...]` mirroring the native hook point's
+  parameters. Cancellation on the trait path is `Flow::Cancel`, and
+  trait-style mods additionally need an `[api]` table and a `pub fn hooks()`
+  export (the generated launcher main calls `mod_i::hooks()`).
+- auto-porter currently emits `[[injection]] hook = <catalog name> kind =
+  "HEAD"` with no `target`/`helper`/`bindings`, and module files that declare
+  a `pub struct` + `impl mod_api::Hooks` (templates and the LLM fallback
+  alike) without a `hooks()` export. Nothing in the current CI binds or
+  compiles bundles against Horizon (the in-game stages require the
+  self-hosted runner), so this passes CI today but would not load in-game.
+
+What is already correct and enforced (this milestone): the LLM prompt and the
+validator now teach and require the REAL `mod_api::Hooks` method shapes —
+exact signatures, `Flow` semantics, event struct fields — extracted from the
+pinned revision into `hooks/hook-signatures.json`
+(`scripts/extract-hook-signatures.py`; 384/386 catalog hooks covered; the two
+render-crate hooks fall back to catalog metadata). Making the emitted
+bundles *bindable* is the next workstream: derive per-hook `bindings` from
+the native hook point signatures, emit `[api]`/`trait_method`/`hooks()` per
+the launcher's contract, and rewrite the templates to the same shape.

@@ -12,6 +12,7 @@
 //! differs).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One entry of the catalog's global `helpers` list (the Host-side methods a
@@ -92,6 +93,25 @@ impl Default for HookDef {
     }
 }
 
+/// The exact `mod_api::Hooks` trait-method shape of one hook, extracted from
+/// the pinned Horizon revision by `scripts/extract-hook-signatures.py`
+/// (`hooks/hook-signatures.json`). This is ground truth: the model must
+/// copy it, and the validator enforces it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookSignature {
+    /// Single-line Rust signature, e.g.
+    /// `fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent)`.
+    pub signature: String,
+    #[serde(default)]
+    pub returns_flow: bool,
+    #[serde(default)]
+    pub doc: String,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub event_fields: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
@@ -104,13 +124,23 @@ pub struct HookCatalog {
     pub hooks: Vec<HookDef>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub helpers: Vec<HelperDef>,
+    /// Exact trait signatures per hook name — not part of native-hooks.json;
+    /// loaded from the sibling hook-signatures.json when present.
+    #[serde(skip)]
+    pub signatures: BTreeMap<String, HookSignature>,
+    /// Host helper method signatures, same provenance as `signatures`.
+    #[serde(skip)]
+    pub host_methods: BTreeMap<String, String>,
 }
 
 impl HookCatalog {
     pub fn load(path: &Path) -> Result<HookCatalog, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read hook catalog {}: {e}", path.display()))?;
-        Self::parse(&text).map_err(|e| format!("cannot parse hook catalog {}: {e}", path.display()))
+        let mut catalog = Self::parse(&text)
+            .map_err(|e| format!("cannot parse hook catalog {}: {e}", path.display()))?;
+        catalog.attach_signatures(path)?;
+        Ok(catalog)
     }
 
     /// Prefer an explicit path; fall back to the committed catalog snapshot
@@ -126,6 +156,45 @@ impl HookCatalog {
             Path::new("hooks/native-hooks.json").to_path_buf()
         };
         HookCatalog::load(&snap)
+    }
+
+    /// Load the sibling `hook-signatures.json` (exact trait signatures
+    /// extracted from the pinned Horizon revision). Optional by design:
+    /// catalogs parsed from temp files in tests simply have no signatures.
+    fn attach_signatures(&mut self, catalog_path: &Path) -> Result<(), String> {
+        let Some(sibling) = catalog_path.parent() else {
+            return Ok(());
+        };
+        let path = sibling.join("hook-signatures.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(());
+        };
+        #[derive(Deserialize)]
+        struct RawSignatures {
+            #[serde(default)]
+            hooks: BTreeMap<String, HookSignature>,
+            #[serde(default)]
+            host_methods: BTreeMap<String, String>,
+        }
+        let raw: RawSignatures = serde_json::from_str(&text)
+            .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
+        self.signatures = raw.hooks;
+        self.host_methods = raw.host_methods;
+        Ok(())
+    }
+
+    /// The exact trait signature of a hook, when the signature table is
+    /// attached.
+    pub fn signature(&self, hook: &str) -> Option<&HookSignature> {
+        self.signatures.get(hook)
+    }
+
+    /// Host helper methods as full signature lines (ground truth for the
+    /// LLM prompt); empty when no signature table is attached.
+    pub fn helper_signatures_text(&self) -> String {
+        let mut lines: Vec<String> = self.host_methods.values().cloned().collect();
+        lines.sort();
+        lines.join("\n")
     }
 
     /// Helper names available to native mods (the catalog's global `helpers`
@@ -191,6 +260,8 @@ impl HookCatalog {
             source: raw.source,
             hooks,
             helpers: raw.helpers,
+            signatures: BTreeMap::new(),
+            host_methods: BTreeMap::new(),
         })
     }
 }

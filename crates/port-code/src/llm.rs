@@ -25,23 +25,43 @@ use std::time::Duration;
 pub const PORT_INFEASIBLE: &str = "// PORT_INFEASIBLE";
 
 /// System message sent with every LLM request. This is the contract; the
-/// task-specific prompt is built by [`build_prompt`].
+/// task-specific prompt is built by [`build_prompt`]. The hook shapes it
+/// references come from `hooks/hook-signatures.json` — extracted from the
+/// pinned Horizon revision, not invented (docs/limitations.md).
 pub const SYSTEM_CONTRACT: &str = r#"You are the code-generation backend of auto-porter, a pipeline that ports Minecraft Java Edition mods to Horizon.
 
 CONTEXT:
 - Horizon is Minecraft: Java Edition 26.3 rewritten in Rust.
-- Native mods implement the generated `horizon_client::mod_api::Hooks` trait.
-- The `Host` trait provides game helpers (spawn entities, play sounds, redstone, fluid tanks, network, ...).
-- Hook contracts: "listen" (observe), "cancel" (veto), "replace" (override the return), "collect" (gather from all mods).
-- In the generated trait, cancel/replace arrive as out-parameters (e.g. `canceled: &mut bool`, `result: &mut Option<...>`); the signature in the prompt is authoritative.
+- Native mods implement the `horizon_client::mod_api::Hooks` trait; the HOOK CONTRACT section of the task names the exact trait method you must produce.
+- The method receives `host: &mut dyn Host` (game access: spawn entities, play sounds, redstone, fluid tanks, network, ...) and `event: &mut <X>Event` (the hook's data).
+- Hook contracts: "listen" (observe), "cancel" (veto), "replace" (override values), "collect" (gather from all mods).
+- Cancellation and overrides live in the signature and event, NOT in out-parameters: when the signature returns `Flow`, return `Flow::Cancel` to veto (skips later mods and the game's default action) and `Flow::Continue` otherwise; when the event struct exposes mutable fields, write the replacement value into them.
+- The generated source is one module of the mod's bundle, compiled with `#![deny(warnings)]`; prefix any parameter you do not use with an underscore (e.g. `_host`).
 
 OUTPUT CONTRACT — violations are rejected and retried with the reason attached:
-1. Output ONLY compilable Rust: the single method requested. No markdown fences, no prose, no explanation before or after.
-2. The method signature must match the provided hook signature exactly. Do not rename it, do not add `main`, do not add `mod` declarations.
-3. Use ONLY `mod_api` re-exports and `Host` methods. Never invent functions, crates, or Java-style calls. Never import `horizon_client` internals.
+1. Output ONLY compilable Rust: first line `use horizon_client::mod_api::*;`, then one `pub struct` (any name), then its `impl horizon_client::mod_api::Hooks for <Struct>` block containing exactly the one method named in the HOOK CONTRACT. A doc comment above the method is allowed. No markdown fences, no prose, no `main`, no extra `mod` declarations, no other items.
+2. Copy the method signature EXACTLY as the HOOK CONTRACT shows it — same receiver, same parameter types, same return type. Do not add, drop or reorder parameters.
+3. Use ONLY the event's fields, the `host` parameter's methods (the AVAILABLE HOST HELPERS list) and `mod_api` re-exports. Never invent functions, crates, or Java-style calls. Never import `horizon_client` internals.
 4. Never use `unsafe`.
 5. Match the upstream Java behaviour shown in the prompt, including edge cases and ordering.
 6. If the Java behaviour cannot be replicated with the given hook, helpers and contract, output exactly one line — // PORT_INFEASIBLE — and nothing else. An honest infeasible beats invented code."#;
+
+/// Worked example shown in the task prompt: the real `Hooks` shape (exact
+/// signature, `Flow` return, event fields read) rather than a template
+/// skeleton.
+pub const FEW_SHOT: &str = r#"use horizon_client::mod_api::*;
+
+pub struct ExampleDiamondGate;
+
+impl horizon_client::mod_api::Hooks for ExampleDiamondGate {
+    /// Ported from NoPickupDelay::onItemPickup: veto absurd diamond pickups.
+    fn item_picked_up(&self, host: &mut dyn Host, event: &mut ItemPickedUpEvent<'_>) -> Flow {
+        if event.item.ends_with("diamond") && event.count > 64 {
+            return Flow::Cancel; // veto: later mods and the game's pickup are skipped
+        }
+        Flow::Continue
+    }
+}"#;
 
 pub struct LlmRequest {
     pub mod_id: String,
@@ -50,6 +70,10 @@ pub struct LlmRequest {
     pub hook_version: u32,
     pub java_ir: String,
     pub hook_signature: String,
+    /// Ground-truth notes under the signature: Horizon docs for the hook,
+    /// the event struct's fields, Flow semantics. Empty when the signature
+    /// table is not attached.
+    pub contract_notes: String,
     pub relevant_helpers: String,
     pub few_shot_examples: String,
     /// Validator reason from the previous rejected attempt, if any. When
@@ -64,7 +88,7 @@ pub struct LlmRequest {
 pub fn build_prompt(req: &LlmRequest) -> String {
     let rejection = match &req.rejection {
         Some(reason) => format!(
-            "\nPREVIOUS ATTEMPT REJECTED:\nYour previous output was rejected by the static validator: {reason}\nFix that problem and return the corrected Rust method only.\n"
+            "\nPREVIOUS ATTEMPT REJECTED:\nYour previous output was rejected by the static validator: {reason}\nFix that problem and return the corrected Rust only.\n"
         ),
         None => String::new(),
     };
@@ -72,30 +96,31 @@ pub fn build_prompt(req: &LlmRequest) -> String {
         r#"TASK:
 Implement `{hook_name}` (contract: {contract}, hook_version: {hook_version}) for the mod `{mod_id}`.
 
+HOOK CONTRACT — copy this signature exactly (trait `horizon_client::mod_api::Hooks`):
+{hook_signature}
+{contract_notes}
 JAVA BEHAVIOUR (from the original mod; real upstream source when available):
 {java_ir}
 
-AVAILABLE HOOK SIGNATURE (from native-hooks.json — authoritative):
-{hook_signature}
-
-AVAILABLE HOST HELPERS:
+AVAILABLE HOST HELPERS (methods on the `host` parameter):
 {relevant_helpers}
 
-WORKED EXAMPLES:
+WORKED EXAMPLE (shape to follow):
 {few_shot_examples}
 {rejection}
 CONSTRAINTS:
-- Use ONLY `mod_api` re-exports and `Host` methods; no `unsafe`; no invented APIs.
+- Use ONLY the event fields, `host` helper methods and `mod_api` re-exports; no `unsafe`; no invented APIs.
 - Add a doc comment saying what the hook does.
 - If the behaviour cannot be replicated with this hook, output exactly `// PORT_INFEASIBLE` and nothing else.
 
 OUTPUT:
-Return ONLY the Rust method (signature and body), no explanations, no markdown fences.
+Return ONLY the Rust module (use line, struct, impl with the single method) — no explanations, no markdown fences.
 "#,
         hook_name = req.hook_name,
         contract = req.contract,
         hook_version = req.hook_version,
         mod_id = req.mod_id,
+        contract_notes = req.contract_notes,
         java_ir = req.java_ir,
         hook_signature = req.hook_signature,
         relevant_helpers = req.relevant_helpers,
@@ -503,6 +528,154 @@ fn brace_balance(code: &str) -> i64 {
     depth
 }
 
+/// Signature conformance: the code must implement exactly the hook method
+/// from the HOOK CONTRACT. Returns the rejection reason when it does not —
+/// the caller feeds it back to the model on the retry. Comparison is
+/// structural: parameter names may differ (the contract allows `_host`
+/// prefixes), but arity, types, order, receiver and return type may not.
+pub fn signature_issue(code: &str, expected_signature: &str) -> Option<String> {
+    let expected = normalize_signature(expected_signature);
+    let name = expected
+        .strip_prefix("fn ")
+        .and_then(|rest| rest.split('(').next())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return None; // unparsable expectation: do not guess
+    }
+    let needle = format!("fn {name}");
+    let mut found_any = false;
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(&needle) {
+        let abs = from + rel;
+        from = abs + needle.len();
+        // Identifier boundary: the preceding char must not extend the name
+        // (`fn not_player_tick` must not match `fn player_tick`).
+        if let Some(prev) = code[..abs].chars().next_back() {
+            if prev.is_alphanumeric() || prev == '_' {
+                continue;
+            }
+        }
+        // Only whitespace between the name and the parameter list.
+        let Some(open_rel) = code[from..].find('(') else {
+            break;
+        };
+        if !code[from..from + open_rel].trim().is_empty() {
+            continue;
+        }
+        let open = from + open_rel;
+        let Some(close) = paren_span(code, open) else {
+            break;
+        };
+        // Optional `-> Ret` up to the body brace.
+        let body = code[close..]
+            .find('{')
+            .map(|b| close + b)
+            .unwrap_or(code.len());
+        let header = &code[abs..body];
+        found_any = true;
+        if signature_parts(header) == signature_parts(expected_signature) {
+            return None;
+        }
+    }
+    if found_any {
+        Some(format!(
+            "the `{name}` signature does not match the contract; copy it exactly: `{expected}`"
+        ))
+    } else {
+        Some(format!(
+            "no `fn {name}` implementation found; the output must implement the hook named in the HOOK CONTRACT"
+        ))
+    }
+}
+
+/// Structural decomposition of a signature header: (fn name, parameter
+/// types in order, return type or ""). Parameter NAMES are dropped (the
+/// contract allows `_host`-style prefixes); everything else must match.
+fn signature_parts(header: &str) -> Option<(String, Vec<String>, String)> {
+    let s = normalize_signature(header);
+    let name = s.strip_prefix("fn ")?.split('(').next()?.trim().to_string();
+    let open = s.find('(')?;
+    let close = paren_span(&s, open)?;
+    let params: Vec<String> = split_top(&s[open + 1..close - 1])
+        .iter()
+        .map(|p| param_type(p))
+        .collect();
+    let rest = s[close..].trim();
+    let ret = rest
+        .strip_prefix("->")
+        .map(|r| normalize_type(r.trim()))
+        .unwrap_or_default();
+    Some((name, params, ret))
+}
+
+/// Split on top-level commas only (a param like `fn() -> i32` keeps its
+/// inner comma intact).
+fn split_top(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i64;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(cur.clone());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// The declared type of one parameter: everything after the last top-level
+/// `:` (names may be `_host`, `host`, anything).
+fn param_type(p: &str) -> String {
+    match p.rfind(':') {
+        Some(i) => normalize_type(p[i + 1..].trim()),
+        None => normalize_type(p.trim()),
+    }
+}
+
+/// Collapse whitespace and drop a leading `pub ` so signatures compare
+/// structurally.
+fn normalize_signature(sig: &str) -> String {
+    let s = sig.trim();
+    let s = s.strip_prefix("pub ").unwrap_or(s);
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Normalize a type for comparison: drop the elided-lifetime form `<'_>` so
+/// the contract's `ItemPickedUpEvent<'_>` matches an impl that keeps it.
+fn normalize_type(t: &str) -> String {
+    t.replace("<'_>", "").trim().to_string()
+}
+
+/// Index just past the `)` closing the paren group opened at `open`.
+fn paren_span(code: &str, open: usize) -> Option<usize> {
+    let mut depth = 0i64;
+    for (i, c) in code[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Extract from the first `fn` to the last `}` — good enough for
 /// prose-wrapped code ("Here is the port: ...fn f() {}... done!"), and the
 /// region must itself be brace-balanced to count.
@@ -626,6 +799,7 @@ mod tests {
             java_ir: "ir".into(),
             hook_signature: "fn on_player_tick(&mut self)".into(),
             relevant_helpers: String::new(),
+            contract_notes: String::new(),
             few_shot_examples: String::new(),
             rejection,
         };
@@ -677,6 +851,7 @@ mod tests {
             java_ir: "class Mock { void onPlayerTick() {} }".into(),
             hook_signature: "fn on_player_tick(&mut self)".into(),
             relevant_helpers: "".into(),
+            contract_notes: "".into(),
             few_shot_examples: "".into(),
             rejection: None,
         };
@@ -732,6 +907,7 @@ mod tests {
             java_ir: "class Mock {}".into(),
             hook_signature: "fn on_player_tick(&mut self)".into(),
             relevant_helpers: "".into(),
+            contract_notes: "".into(),
             few_shot_examples: "".into(),
             rejection: None,
         };
@@ -794,6 +970,7 @@ mod tests {
             java_ir: "class Mock {}".into(),
             hook_signature: "fn on_player_tick(&mut self)".into(),
             relevant_helpers: "".into(),
+            contract_notes: "".into(),
             few_shot_examples: "".into(),
             rejection: None,
         };
@@ -862,6 +1039,7 @@ mod tests {
             java_ir: "class Mock {}".into(),
             hook_signature: "fn on_player_tick(&mut self)".into(),
             relevant_helpers: "".into(),
+            contract_notes: "".into(),
             few_shot_examples: "".into(),
             rejection: None,
         };
@@ -889,5 +1067,56 @@ mod tests {
             "trace carries the task prompt"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The signature check accepts the exact contract shape (any parameter
+    /// names, `pub` prefix, multi-line headers) and rejects wrong shapes.
+    #[test]
+    fn signature_issue_enforces_the_hook_contract() {
+        let expected = "fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent)";
+        let ok = "use horizon_client::mod_api::*;\n\npub struct M;\n\nimpl horizon_client::mod_api::Hooks for M {\n    /// doc\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {\n        let _ = 1;\n    }\n}";
+        assert_eq!(signature_issue(ok, expected), None, "exact shape passes");
+        let multi_line = "pub struct M;\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(\n        &self,\n        host: &mut dyn Host,\n        event: &mut PlayerTickEvent,\n    ) {\n    }\n}";
+        assert_eq!(
+            signature_issue(multi_line, expected),
+            None,
+            "multi-line passes"
+        );
+        let wrong_params = "fn player_tick(&mut self) {}";
+        assert!(
+            signature_issue(wrong_params, expected)
+                .unwrap()
+                .contains("does not match"),
+            "missing host/event params rejected"
+        );
+        let extra_params = "fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent, extra: u32) {}";
+        assert!(
+            signature_issue(extra_params, expected).is_some(),
+            "extra params rejected"
+        );
+        let missing_flow =
+            "fn item_picked_up(&self, host: &mut dyn Host, event: &mut ItemPickedUpEvent<'_>) {}";
+        let flow_expected = "fn item_picked_up(&self, host: &mut dyn Host, event: &mut ItemPickedUpEvent<'_>) -> Flow";
+        assert!(
+            signature_issue(missing_flow, flow_expected).is_some(),
+            "missing -> Flow rejected"
+        );
+        let renamed =
+            "fn on_player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}";
+        assert!(
+            signature_issue(renamed, expected)
+                .unwrap()
+                .contains("no `fn player_tick`"),
+            "renamed method rejected"
+        );
+        // A longer name must not satisfy the shorter needle.
+        let decoy =
+            "fn not_player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}";
+        assert!(
+            signature_issue(decoy, expected)
+                .unwrap()
+                .contains("no `fn player_tick`"),
+            "identifier boundary respected"
+        );
     }
 }

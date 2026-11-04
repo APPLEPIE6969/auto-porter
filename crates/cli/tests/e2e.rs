@@ -220,7 +220,7 @@ fn llm_retries_through_nvidia_degraded_400s() {
             } else {
                 (
                     "200 OK",
-                    r#"{"choices":[{"message":{"content":"/// LLM-generated tick hook.\nfn on_player_tick() {}"}}]}"#,
+                    r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// LLM-generated tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#,
                 )
             };
             let resp = format!(
@@ -993,7 +993,7 @@ fn llm_prompt_carries_real_upstream_source() {
             if let Some(body) = req.split("\r\n\r\n").nth(1) {
                 *store.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             }
-            let body = r#"{"choices":[{"message":{"content":"/// ported with upstream source\nfn on_player_tick() {}"}}]}"#;
+            let body = r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported with upstream source.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -1086,9 +1086,9 @@ fn llm_repairs_rejected_output() {
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             // attempt 1: lint-dirty (`unsafe`); attempt 2: clean
             let code = if n == 0 {
-                "fn on_player_tick(&mut self) { unsafe { let _x = 1; } }"
+                "use horizon_client::mod_api::*;\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) { unsafe { let _x = 1; } }\n}"
             } else {
-                "/// ported tick hook.\nfn on_player_tick(&mut self) {}"
+                "use horizon_client::mod_api::*;\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"
             };
             let payload = serde_json::json!({
                 "choices": [{"message": {"content": code}}]
