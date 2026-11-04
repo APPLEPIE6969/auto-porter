@@ -1,0 +1,70 @@
+name: LLM Soak
+
+# Consistency measurement for the LLM fallback: run the same no-template
+# fixture (chunkcourier's PlayerTickEvent hook) through real NVIDIA NIM
+# generation N times, capturing every raw request/response pair via
+# AUTO_PORTER_LLM_TRACE. Shards are summed into one dataset; scripts/soak-
+# summary.py prints the ported rate, repair rate and failure classes.
+# Dispatch manually from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs_per_shard:
+        description: 'Port runs per shard (one LLM feature per run)'
+        default: '20'
+        required: false
+      model:
+        description: 'NVIDIA NIM model id'
+        default: 'minimaxai/minimax-m3.1-flash'
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p cli
+      - name: Soak runs (real NVIDIA NIM, gated on secret)
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          if [ -z "$NVIDIA_API_KEY" ]; then
+            echo "NVIDIA_API_KEY not set — soak skipped (fallback stays honest)"
+            exit 0
+          fi
+          chmod +x target/release/auto-porter
+          mkdir -p soak
+          n="${{ inputs.runs_per_shard }}"; [ -n "$n" ] || n=20
+          for i in $(seq 1 "$n"); do
+            id="s${{ matrix.shard }}-$(printf '%02d' "$i")"
+            echo "=== run $id ==="
+            AUTO_PORTER_LLM_TRACE="$PWD/soak/trace.jsonl" \
+              target/release/auto-porter port \
+              tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
+              --llm-provider nvidia --llm-model "${{ inputs.model }}" \
+              --output "soak/$id" \
+              || echo "::warning::port failed for $id"
+            sleep 2
+          done
+      - name: Summarize
+        if: always()
+        run: python3 scripts/soak-summary.py --dir soak
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-shard-${{ matrix.shard }}
+          path: soak/

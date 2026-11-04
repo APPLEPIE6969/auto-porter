@@ -17,6 +17,7 @@
 
 use shared::config::{LlmCfg, PorterConfig};
 use shared::error::{ErrorType, Phase, PortError};
+use std::io::Write;
 use std::time::Duration;
 
 /// Sentinel the model may return instead of code when the feature cannot be
@@ -118,10 +119,21 @@ pub enum LlmOutcome {
     Fatal(PortError),
 }
 
+/// One chat-completion request. When `AUTO_PORTER_LLM_TRACE` names a file,
+/// every request/response pair is appended there as one JSON line (soak
+/// analysis, CI debugging) — tracing is diagnostics only and never alters
+/// outcomes.
 #[allow(clippy::result_large_err)]
 pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
+    let started = std::time::Instant::now();
     let prompt = build_prompt(req);
+    let (outcome, extra) = call_inner(cfg, &prompt);
+    trace_call(req, cfg, &prompt, &outcome, &extra, started.elapsed());
+    outcome
+}
 
+#[allow(clippy::result_large_err)]
+fn call_inner(cfg: &PorterConfig, prompt: &str) -> (LlmOutcome, serde_json::Value) {
     let (url, headers, body): (String, Vec<(String, String)>, serde_json::Value) = match cfg
         .llm
         .provider
@@ -132,7 +144,8 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 .ok()
                 .filter(|k| !k.is_empty())
             else {
-                return LlmOutcome::Unavailable(
+                return (
+                    LlmOutcome::Unavailable(
                         PortError::new(
                             Phase::PortCode,
                             ErrorType::LlmUnavailable,
@@ -141,7 +154,9 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                         .with_suggestion(
                             "export ANTHROPIC_API_KEY, add a template for this pattern, or accept the SKIPPED feature",
                         ),
-                    );
+                    ),
+                    serde_json::json!({}),
+                );
             };
             (
                 "https://api.anthropic.com/v1/messages".to_string(),
@@ -170,15 +185,18 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                 ),
             };
             let Some(key) = std::env::var(env_var).ok().filter(|k| !k.is_empty()) else {
-                return LlmOutcome::Unavailable(
-                    PortError::new(
-                        Phase::PortCode,
-                        ErrorType::LlmUnavailable,
-                        format!("{env_var} is not set; the LLM fallback cannot run"),
-                    )
-                    .with_suggestion(format!(
-                        "export {env_var} or add a template for this pattern"
-                    )),
+                return (
+                    LlmOutcome::Unavailable(
+                        PortError::new(
+                            Phase::PortCode,
+                            ErrorType::LlmUnavailable,
+                            format!("{env_var} is not set; the LLM fallback cannot run"),
+                        )
+                        .with_suggestion(format!(
+                            "export {env_var} or add a template for this pattern"
+                        )),
+                    ),
+                    serde_json::json!({}),
                 );
             };
             let headers = vec![("authorization".to_string(), format!("Bearer {key}"))];
@@ -212,11 +230,14 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
             (url, headers, body)
         }
         other => {
-            return LlmOutcome::Unavailable(PortError::new(
-                Phase::PortCode,
-                ErrorType::LlmUnavailable,
-                format!("unsupported LLM provider `{other}` (porter.toml [llm].provider)"),
-            ));
+            return (
+                LlmOutcome::Unavailable(PortError::new(
+                    Phase::PortCode,
+                    ErrorType::LlmUnavailable,
+                    format!("unsupported LLM provider `{other}` (porter.toml [llm].provider)"),
+                )),
+                serde_json::json!({}),
+            );
         }
     };
 
@@ -234,7 +255,21 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
         Ok(resp) => match resp.into_json::<serde_json::Value>() {
             Ok(json) => {
                 let text = extract_text(&json, &cfg.llm.provider);
-                match text
+                // Provenance for the trace: finish reason and token usage
+                // diagnose truncation (`length`) and reasoning-model stalls.
+                let extra = serde_json::json!({
+                    "finish_reason": json
+                        .pointer("/choices/0/finish_reason")
+                        .or_else(|| json.get("stop_reason"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    "usage": json.get("usage").cloned().unwrap_or(serde_json::Value::Null),
+                    "raw_text": text
+                        .as_deref()
+                        .map(|t| truncate(t, 8000))
+                        .unwrap_or_default(),
+                });
+                let outcome = match text
                     .map(|t| normalize_code(&t))
                     .filter(|t| !t.trim().is_empty())
                 {
@@ -244,13 +279,17 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                         ErrorType::LlmFailed,
                         "LLM returned an empty response",
                     )),
-                }
+                };
+                (outcome, extra)
             }
-            Err(e) => LlmOutcome::Failed(PortError::new(
-                Phase::PortCode,
-                ErrorType::LlmFailed,
-                format!("cannot decode LLM response: {e}"),
-            )),
+            Err(e) => (
+                LlmOutcome::Failed(PortError::new(
+                    Phase::PortCode,
+                    ErrorType::LlmFailed,
+                    format!("cannot decode LLM response: {e}"),
+                )),
+                serde_json::json!({ "decode_error": e.to_string() }),
+            ),
         },
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
@@ -262,31 +301,96 @@ pub fn call(req: &LlmRequest, cfg: &PorterConfig) -> LlmOutcome {
                     truncate(&body, 400)
                 ),
             );
+            let extra = serde_json::json!({ "status": code, "body": truncate(&body, 600) });
             // NVIDIA's "DEGRADED function cannot be invoked" arrives as 400
             // but is a server-side outage — retry it (spec §10: the free
             // tier fails transiently by design).
             if LlmCfg::is_fatal_status(code) && !LlmCfg::is_infra_degraded_body(&body) {
-                LlmOutcome::Fatal(err)
+                (LlmOutcome::Fatal(err), extra)
             } else {
-                LlmOutcome::Failed(err)
+                (LlmOutcome::Failed(err), extra)
             }
         }
         Err(ureq::Error::Transport(t)) => {
             let msg = t.to_string();
+            let extra = serde_json::json!({ "transport": msg.clone() });
             if msg.contains("timed out") || msg.contains("timeout") {
-                LlmOutcome::Timeout(PortError::new(
-                    Phase::PortCode,
-                    ErrorType::LlmTimeout,
-                    format!("LLM call exceeded {}s", cfg.llm.timeout_secs),
-                ))
+                (
+                    LlmOutcome::Timeout(PortError::new(
+                        Phase::PortCode,
+                        ErrorType::LlmTimeout,
+                        format!("LLM call exceeded {}s", cfg.llm.timeout_secs),
+                    )),
+                    extra,
+                )
             } else {
-                LlmOutcome::Failed(PortError::new(
-                    Phase::PortCode,
-                    ErrorType::LlmFailed,
-                    format!("LLM transport error: {msg}"),
-                ))
+                (
+                    LlmOutcome::Failed(PortError::new(
+                        Phase::PortCode,
+                        ErrorType::LlmFailed,
+                        format!("LLM transport error: {msg}"),
+                    )),
+                    extra,
+                )
             }
         }
+    }
+}
+
+/// Append one JSON line describing this call to the file named by
+/// `AUTO_PORTER_LLM_TRACE`. Failures to write are warned on stderr but
+/// never affect the port.
+fn trace_call(
+    req: &LlmRequest,
+    cfg: &PorterConfig,
+    prompt: &str,
+    outcome: &LlmOutcome,
+    extra: &serde_json::Value,
+    elapsed: Duration,
+) {
+    let Ok(path) = std::env::var("AUTO_PORTER_LLM_TRACE") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let (kind, error) = match outcome {
+        LlmOutcome::Code(_) => ("code", None),
+        LlmOutcome::Unavailable(e) => ("unavailable", Some(e.message.clone())),
+        LlmOutcome::Timeout(e) => ("timeout", Some(e.message.clone())),
+        LlmOutcome::Failed(e) => ("failed", Some(e.message.clone())),
+        LlmOutcome::Fatal(e) => ("fatal", Some(e.message.clone())),
+    };
+    let mut entry = serde_json::json!({
+        "ts_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        "provider": cfg.llm.provider,
+        "model": cfg.llm.model,
+        "mod_id": req.mod_id,
+        "hook_name": req.hook_name,
+        "outcome": kind,
+        "error": error,
+        "latency_ms": elapsed.as_millis() as u64,
+        "prompt": prompt,
+    });
+    if let (Some(dst), Some(src)) = (entry.as_object_mut(), extra.as_object()) {
+        for (k, v) in src {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
+    let line = entry.to_string();
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            f.write_all(line.as_bytes())
+                .and_then(|_| f.write_all(b"\n"))
+        });
+    if let Err(e) = written {
+        eprintln!("auto-porter: cannot write LLM trace to {path}: {e}");
     }
 }
 
@@ -444,6 +548,36 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    /// Serializes the tests that mutate process env vars (API keys, trace
+    /// path) — cargo runs tests in parallel threads and std::env is
+    /// process-global.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Poison-tolerant acquisition: a panicking test must not cascade
+    /// PoisonError failures into unrelated tests.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// True when `raw` holds a complete HTTP request: the header block is
+    /// terminated and — when Content-Length is present — the body has fully
+    /// arrived.
+    fn read_request_complete(raw: &[u8]) -> bool {
+        let Some(h) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+            return false;
+        };
+        let head = String::from_utf8_lossy(&raw[..h]);
+        let mut len = 0usize;
+        for line in head.lines() {
+            if let Some((k, v)) = line.split_once(':') {
+                if k.trim().eq_ignore_ascii_case("content-length") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        raw.len() >= h + 4 + len
+    }
+
     #[test]
     fn degraded_body_signature_detected() {
         // verbatim body observed in CI on 2026-11-03
@@ -511,6 +645,7 @@ mod tests {
     /// e2e test in the cli crate.
     #[test]
     fn degraded_400_is_retryable_not_fatal() {
+        let _env = env_lock();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -564,6 +699,7 @@ mod tests {
     /// of burning the attempt budget.
     #[test]
     fn auth_401_stays_fatal() {
+        let _env = env_lock();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -612,6 +748,7 @@ mod tests {
     /// the output contract survives even long task prompts.
     #[test]
     fn request_messages_carry_system_contract() {
+        let _env = env_lock();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -619,9 +756,23 @@ mod tests {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let mut buf = vec![0u8; 16384];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                *store.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Read the FULL request (header block + Content-Length body)
+                // before answering: a single read() races TCP segmentation
+                // and can capture headers only (the bug that flaked this
+                // test — same class as the e2e read_http_request fix).
+                let mut raw: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 16384];
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    if read_request_complete(&raw) {
+                        break;
+                    }
+                }
+                *store.lock().unwrap() = String::from_utf8_lossy(&raw).to_string();
                 let body = r#"{"choices":[{"message":{"content":"/// d\nfn on_player_tick(&mut self) {}"}}]}"#;
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -663,5 +814,80 @@ mod tests {
             matches!(outcome, LlmOutcome::Code(ref c) if c.contains("fn on_player_tick")),
             "clean code comes back as Code"
         );
+    }
+
+    /// With AUTO_PORTER_LLM_TRACE set, every call appends one JSON line
+    /// carrying the prompt, the outcome and response provenance — the soak
+    /// harness and CI debugging depend on it.
+    #[test]
+    fn trace_env_writes_jsonl_per_call() {
+        let _env = env_lock();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"choices":[{"message":{"content":"/// d\nfn on_player_tick(&mut self) {}"},"finish_reason":"stop"}],"usage":{"total_tokens":42}}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!(
+            "ap-trace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("trace.jsonl");
+
+        std::env::set_var("AUTO_PORTER_LLM_TRACE", &path);
+        std::env::set_var("OPENAI_API_KEY", "test-key-for-trace");
+        let mut cfg = PorterConfig::default();
+        cfg.llm.provider = "openai".to_string();
+        cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+        let req = LlmRequest {
+            mod_id: "trace-probe".into(),
+            hook_name: "on_player_tick".into(),
+            contract: "listen".into(),
+            hook_version: 1,
+            java_ir: "class Mock {}".into(),
+            hook_signature: "fn on_player_tick(&mut self)".into(),
+            relevant_helpers: "".into(),
+            few_shot_examples: "".into(),
+            rejection: None,
+        };
+        let outcome = call(&req, &cfg);
+        std::env::remove_var("AUTO_PORTER_LLM_TRACE");
+        std::env::remove_var("OPENAI_API_KEY");
+
+        assert!(matches!(outcome, LlmOutcome::Code(_)));
+        let content = std::fs::read_to_string(&path).expect("trace file written");
+        // Other tests may run `call` concurrently while the env var is set;
+        // select this test's calls by its unique mod_id.
+        let mine: Vec<serde_json::Value> = content
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("trace line is JSON"))
+            .filter(|v| v["mod_id"] == "trace-probe")
+            .collect();
+        assert_eq!(mine.len(), 1, "exactly one line for this call: {mine:?}");
+        let v = &mine[0];
+        assert_eq!(v["outcome"], "code");
+        assert_eq!(v["provider"], "openai");
+        assert_eq!(v["finish_reason"], "stop");
+        assert_eq!(v["usage"]["total_tokens"], 42);
+        assert!(
+            v["prompt"].as_str().unwrap().contains("TASK:"),
+            "trace carries the task prompt"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
