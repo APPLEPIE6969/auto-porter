@@ -200,33 +200,47 @@ reference set — that is the modpack-sweep's job on CI.
   `mixins_revision` in `porter.toml` are new config surface, documented in
   the file itself.
 
-## 8. Bundle bindability (open workstream)
+## 8. Bundle bindability (resolved — emitted shape matches the launcher)
 
-The generated `.hnmod` sources are valid Rust modules, but they do not yet
-use the bundle wiring real Horizon mods use. Verified against
-`horizon-rust/horizon@6beacfe9` (launcher `native_mods/{api,crates,inject}.rs`)
-and the `horizon-rust/horizon-mods` registry:
+The original gap, verified against `horizon-rust/horizon@6beacfe9`
+(launcher `native_mods/{api,crates,inject}.rs`) and the
+`horizon-rust/horizon-mods` registry: auto-porter emitted `[[injection]]`
+tables with no `id` (which the launcher's `bundle()` silently drops), no
+`[api]` table, and no `hooks()` export — valid Rust that could never load.
+Catalog trait hooks, moreover, need no injections at all: the game dispatches
+them through `mod_api::mods()` (`native_player_tick` calls
+`mod_api::dispatch_player_tick(self, mod_api::mods())`), and `trait_method`
+injections are only for non-catalog targets.
 
-- A registry bundle (`native/coords-hud`) is a plain helper module —
-  `fn coords_hud(game: &mut Game<'_>, batch: &mut HudBatch, ...)` — plus a
-  `[[injection]]` table with `target = <native hook path>`, `helper = "<file>"`
-  and `bindings = [{name, ty, value}...]` mirroring the native hook point's
-  parameters. Cancellation on the trait path is `Flow::Cancel`, and
-  trait-style mods additionally need an `[api]` table and a `pub fn hooks()`
-  export (the generated launcher main calls `mod_i::hooks()`).
-- auto-porter currently emits `[[injection]] hook = <catalog name> kind =
-  "HEAD"` with no `target`/`helper`/`bindings`, and module files that declare
-  a `pub struct` + `impl mod_api::Hooks` (templates and the LLM fallback
-  alike) without a `hooks()` export. Nothing in the current CI binds or
-  compiles bundles against Horizon (the in-game stages require the
-  self-hosted runner), so this passes CI today but would not load in-game.
+What the pipeline emits now (the trait-style mod path, the launcher's
+`api::stage` contract):
 
-What is already correct and enforced (this milestone): the LLM prompt and the
-validator now teach and require the REAL `mod_api::Hooks` method shapes —
-exact signatures, `Flow` semantics, event struct fields — extracted from the
-pinned revision into `hooks/hook-signatures.json`
-(`scripts/extract-hook-signatures.py`; 384/386 catalog hooks covered; the two
-render-crate hooks fall back to catalog metadata). Making the emitted
-bundles *bindable* is the next workstream: derive per-hook `bindings` from
-the native hook point signatures, emit `[api]`/`trait_method`/`hooks()` per
-the launcher's contract, and rewrite the templates to the same shape.
+- `mixins/<id>/horizon-mixin.toml` carries exactly `[mod]` (id, version),
+  `[compatibility]` (horizon_revision, consistent with the
+  `horizon-native.json` pin) and `[api] path = "engine"` — no injections.
+- `mixins/<id>/engine/` is a crate (edition 2024, `horizon-client` path
+  dependency, which the launcher rewrites to the staged game) whose `lib.rs`
+  declares the feature modules, a `#[derive(Default)] pub struct PortedHooks`
+  holding every feature module's `Hooks` struct, `impl mod_api::Hooks for
+  PortedHooks` delegating each catalog hook in `hooks_used` to the feature
+  modules that implement it (all implementers run in feature order;
+  `Flow::Cancel` short-circuits; value hooks take the first implementer), and
+  the `pub fn hooks() -> Box<dyn mod_api::Hooks>` entry point the launcher's
+  generated `main` calls (`mod_i::hooks()`).
+- The LLM contract (v3) additionally requires `#[derive(Default)]` (or
+  `impl Default`) on the generated struct — the launcher constructs the mod's
+  hooks with `<Struct>::default()` — enforced by the validator and repaired
+  like any other rejection. Templates render the REAL trait signature from
+  `hooks/hook-signatures.json` (`{{HOOK_METHOD_BLOCK}}`; `_`-prefixed
+  parameter names because the skeleton body reads none) and derive `Default`.
+- `verify --hnmod` mirrors the launcher's load-time rules: `[mod]` id/version
+  present, id charset (`api::valid_id`), the `[api]` path points at a crate in
+  the bundle with a `horizon-client` dependency, and `pub fn hooks()` exists.
+
+Honest fallbacks, not fabrications: a hook without an extracted signature
+(2 of 386, render-crate) renders no method at all — the trait's default no-op
+keeps the crate buildable and the hook is reported as unwired; the bundle
+assembler returns the same warnings into the report. What remains deferred is
+unchanged: actually compiling and loading the bundle needs the launcher on the
+self-hosted runner (spec §5.2; see §3), and `trait_method` injections for
+non-catalog targets are not generated.

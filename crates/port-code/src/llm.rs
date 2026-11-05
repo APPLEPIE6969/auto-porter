@@ -39,7 +39,7 @@ CONTEXT:
 - The generated source is one module of the mod's bundle, compiled with `#![deny(warnings)]`; prefix any parameter you do not use with an underscore (e.g. `_host`).
 
 OUTPUT CONTRACT — violations are rejected and retried with the reason attached:
-1. Output ONLY compilable Rust: first line `use horizon_client::mod_api::*;`, then one `pub struct` (any name), then its `impl horizon_client::mod_api::Hooks for <Struct>` block containing exactly the one method named in the HOOK CONTRACT. A doc comment above the method is allowed. No markdown fences, no prose, no `main`, no extra `mod` declarations, no other items.
+1. Output ONLY compilable Rust: first line `use horizon_client::mod_api::*;`, then one `pub struct` (any name) that derives or implements `Default` — the launcher constructs the mod's Hooks object with `<Struct>::default()` — then its `impl horizon_client::mod_api::Hooks for <Struct>` block containing exactly the one method named in the HOOK CONTRACT. A doc comment above the method is allowed. No markdown fences, no prose, no `main`, no extra `mod` declarations, no other items.
 2. Copy the method signature EXACTLY as the HOOK CONTRACT shows it — same receiver, same parameter types, same return type. Do not add, drop or reorder parameters.
 3. Use ONLY the event's fields, the `host` parameter's methods (the AVAILABLE HOST HELPERS list) and `mod_api` re-exports. Never invent functions, crates, or Java-style calls. Never import `horizon_client` internals.
 4. Never use `unsafe`.
@@ -51,6 +51,7 @@ OUTPUT CONTRACT — violations are rejected and retried with the reason attached
 /// skeleton.
 pub const FEW_SHOT: &str = r#"use horizon_client::mod_api::*;
 
+#[derive(Default)]
 pub struct ExampleDiamondGate;
 
 impl horizon_client::mod_api::Hooks for ExampleDiamondGate {
@@ -111,6 +112,7 @@ WORKED EXAMPLE (shape to follow):
 CONSTRAINTS:
 - Use ONLY the event fields, `host` helper methods and `mod_api` re-exports; no `unsafe`; no invented APIs.
 - Add a doc comment saying what the hook does.
+- Give the struct `#[derive(Default)]` (or `impl Default`) — the launcher constructs the mod's hooks with `<Struct>::default()`.
 - If the behaviour cannot be replicated with this hook, output exactly `// PORT_INFEASIBLE` and nothing else.
 
 OUTPUT:
@@ -590,6 +592,91 @@ pub fn signature_issue(code: &str, expected_signature: &str) -> Option<String> {
     }
 }
 
+/// The struct named by the first `impl ... Hooks for <Struct>` header.
+pub(crate) fn hooks_impl_struct(code: &str) -> Option<String> {
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find("Hooks for ") {
+        let abs = from + rel + "Hooks for ".len();
+        let name: String = code[abs..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            return Some(name);
+        }
+        from = abs;
+    }
+    None
+}
+
+/// The mod struct must be constructible with `<Struct>::default()`: the
+/// launcher's generated entry point builds the mod's Hooks object that way
+/// (`vec![mod_0::hooks()].into()`, `Box::new(<Struct>::default())`). Returns
+/// the rejection reason when the struct carries no `Default`.
+pub fn default_issue(code: &str) -> Option<String> {
+    if is_infeasible(code) {
+        return None; // honest skip: no struct is generated
+    }
+    let Some(name) = hooks_impl_struct(code) else {
+        return None; // a missing impl is reported by signature_issue
+    };
+    let ident_boundary = |c: Option<char>| {
+        c.map(|c| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(true)
+    };
+    // `#[derive(Default)]` (possibly among other derives) on the attribute
+    // run directly above the struct declaration.
+    let decl_marker = format!("struct {name}");
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(&decl_marker) {
+        let abs = from + rel;
+        from = abs + decl_marker.len();
+        if !ident_boundary(code[..abs].chars().next_back())
+            || !ident_boundary(code[from..].chars().next())
+        {
+            continue;
+        }
+        let line_start = code[..abs].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        // Walk up over the attribute/comment block directly above the
+        // declaration; the first item-like line ends the run (so a derive on
+        // a sibling struct never counts for this one).
+        let mut derived = false;
+        for line in code[..line_start].lines().rev() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with("//") {
+                continue;
+            }
+            if t.starts_with("#[") {
+                if t.contains("derive") && t.contains("Default") {
+                    derived = true;
+                }
+                continue;
+            }
+            break;
+        }
+        if derived {
+            return None;
+        }
+    }
+    // ... or a manual impl (any conventional spelling of the path).
+    for path in [
+        "impl Default for ",
+        "impl core::default::Default for ",
+        "impl std::default::Default for ",
+    ] {
+        let marker = format!("{path}{name}");
+        if let Some(rel) = code.find(&marker) {
+            let after = &code[rel + marker.len()..];
+            if ident_boundary(after.chars().next()) {
+                return None;
+            }
+        }
+    }
+    Some(format!(
+        "struct `{name}` has no `Default`; add `#[derive(Default)]` (or `impl Default`) — the launcher constructs the mod's hooks with `<Struct>::default()`"
+    ))
+}
+
 /// Structural decomposition of a signature header: (fn name, parameter
 /// types in order, return type or ""). Parameter NAMES are dropped (the
 /// contract allows `_host`-style prefixes); everything else must match.
@@ -612,7 +699,7 @@ fn signature_parts(header: &str) -> Option<(String, Vec<String>, String)> {
 
 /// Split on top-level commas only (a param like `fn() -> i32` keeps its
 /// inner comma intact).
-fn split_top(s: &str) -> Vec<String> {
+pub(crate) fn split_top(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut depth = 0i64;
     let mut cur = String::new();
@@ -659,7 +746,7 @@ fn normalize_type(t: &str) -> String {
 }
 
 /// Index just past the `)` closing the paren group opened at `open`.
-fn paren_span(code: &str, open: usize) -> Option<usize> {
+pub(crate) fn paren_span(code: &str, open: usize) -> Option<usize> {
     let mut depth = 0i64;
     for (i, c) in code[open..].char_indices() {
         match c {
@@ -1117,6 +1204,34 @@ mod tests {
                 .unwrap()
                 .contains("no `fn player_tick`"),
             "identifier boundary respected"
+        );
+    }
+
+    #[test]
+    fn default_issue_requires_a_constructible_struct() {
+        let derived = "use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct M {\n    ticks: std::sync::atomic::AtomicU32,\n}\n\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}";
+        assert_eq!(default_issue(derived), None, "derive(Default) passes");
+        let manual = "pub struct M;\n\nimpl Default for M {\n    fn default() -> Self {\n        M\n    }\n}\n\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}";
+        assert_eq!(default_issue(manual), None, "manual impl Default passes");
+        let missing = "pub struct M {\n    ticks: u32,\n}\n\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}";
+        let issue = default_issue(missing).expect("missing Default rejected");
+        assert!(
+            issue.contains("`M` has no `Default`") && issue.contains("derive(Default)"),
+            "reason names the fix: {issue}"
+        );
+        // The struct-name scan must not accept a longer sibling identifier.
+        let sibling = "pub struct M2 {\n    ticks: u32,\n}\npub struct M;\n\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}";
+        assert!(
+            default_issue(sibling).is_some(),
+            "`struct M2` is not `struct M`"
+        );
+        // The sentinel is exempt: no struct is generated at all.
+        assert_eq!(default_issue(PORT_INFEASIBLE), None, "sentinel passes");
+        // Deriving on a DIFFERENT struct does not satisfy the impl's struct.
+        let wrong_struct = "#[derive(Default)]\npub struct Other;\n\npub struct M;\n\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}";
+        assert!(
+            default_issue(wrong_struct).is_some(),
+            "Default on another struct does not count"
         );
     }
 }

@@ -92,7 +92,7 @@ pub fn port_code(
 
                 let generated: Generated = match feature.template.as_deref() {
                     Some(template_name) => {
-                        render_template(template_name, feature, hook, decomposed, verbose)
+                        render_template(template_name, feature, hook, decomposed, catalog, verbose)
                             .map(|code| Generated::Code { code, note: None })
                             .unwrap_or(Generated::Failed)
                     }
@@ -111,7 +111,8 @@ pub fn port_code(
                     Generated::Code { code, note } => {
                         if verify_lint(&code, &mut errors, &feature.id) {
                             let slug = module_slug(&feature.id);
-                            modules.push((format!("{slug}.rs"), code));
+                            let file_name = unique_module_file(&slug, &modules);
+                            modules.push((file_name, code));
                             if !hooks_used.iter().any(|h| h == hook) {
                                 hooks_used.push(hook.clone());
                             }
@@ -199,7 +200,15 @@ pub fn port_code(
             catalog,
             &modules,
         ) {
-            Ok(()) => hnmod = Some(dest),
+            Ok(warnings) => {
+                for w in warnings {
+                    errors.push(
+                        PortError::new(Phase::PortCode, ErrorType::CompileError, w)
+                            .for_feature(plan.mod_id.clone()),
+                    );
+                }
+                hnmod = Some(dest);
+            }
             Err(e) => errors.push(e),
         }
     }
@@ -274,6 +283,7 @@ fn render_template(
     feature: &Feature,
     hook: &HookRef,
     decomposed: &DecomposedMod,
+    catalog: &HookCatalog,
     verbose: bool,
 ) -> Option<String> {
     let template = load_template(template_name)?;
@@ -284,12 +294,37 @@ fn render_template(
         .cloned()
         .unwrap_or_else(|| "port the original behaviour here".to_string());
     let todo = format!(
-        "TODO: replicate `{java_source}` against the pinned native-hooks.json signature ({}), then let the launcher build verify it",
-        hook.name
+        "TODO: replicate `{java_source}` against the pinned signature, then let the launcher build verify it",
     );
+
+    // The method block carries the REAL trait signature from the extracted
+    // table — the launcher's generated `Hooks` trait is authoritative and an
+    // invented shape would not even be a trait member. Parameter names get a
+    // `_` prefix: the skeleton body reads none of them, and the crate is
+    // compiled with #![deny(warnings)]. Without a table entry no method is
+    // emitted at all: a non-member method would break the build, while the
+    // default no-op keeps the crate valid and the hook is reported unwired.
+    let signature = catalog.signature(&hook.name).map(|s| s.signature.as_str());
+    // Plain concatenation (no format!): the `{{PLACEHOLDER}}` markers must
+    // survive verbatim for the replace chain below.
+    let method_block = match signature.and_then(underscored_signature) {
+        Some(sig) => {
+            String::from(
+                "    /// {{FEATURE_TITLE}} — ported from {{JAVA_SOURCE}}.\n    // Contract: {{CONTRACT}}. Condition: {{CONDITION}}\n    // {{ACTION_NOTE}}\n    // {{TODO}}\n    ",
+            ) + &sig
+                + " {\n    }"
+        }
+        None => String::from(
+            "    /// {{FEATURE_TITLE}} — ported from {{JAVA_SOURCE}}.\n    // The exact trait signature for `{{HOOK_NAME}}` is not in the extracted\n    // signature table, so no method is emitted: the trait method keeps its\n    // default (no-op) and this hook stays unwired — see the port report.\n    // Add the method once the signature is pinned.\n    // {{ACTION_NOTE}}",
+        ),
+    };
 
     let struct_name = struct_name(&feature.id);
     let code = template
+        // The method block goes in FIRST: it carries placeholders of its own
+        // ({{FEATURE_TITLE}}, {{JAVA_SOURCE}}, ...) that the chain below must
+        // resolve inside it.
+        .replace("{{HOOK_METHOD_BLOCK}}", &method_block)
         .replace("{{MOD_ID}}", &decomposed.metadata.id)
         .replace("{{FEATURE_ID}}", &feature.id)
         .replace("{{FEATURE_TITLE}}", &feature.title)
@@ -311,6 +346,74 @@ fn render_template(
         );
     }
     Some(code)
+}
+
+/// A feature module whose slug collides with an earlier one (two features
+/// with the same tail) would silently overwrite it; suffix the file instead.
+fn unique_module_file(slug: &str, modules: &[(String, String)]) -> String {
+    let mut candidate = format!("{slug}.rs");
+    let mut n = 2;
+    while modules.iter().any(|(f, _)| *f == candidate) {
+        candidate = format!("{slug}_{n}.rs");
+        n += 1;
+    }
+    candidate
+}
+
+/// Split a trait-method signature (`fn name(&self, a: T, ...) -> R`) into
+/// (name, params in declaration order as `(name, "name: Type")`, return type
+/// or ""). The `&self` receiver is dropped; nested generics and parens
+/// survive the comma split. Unparsable shapes return None.
+#[allow(clippy::type_complexity)]
+pub(crate) fn parse_hook_signature(sig: &str) -> Option<(String, Vec<(String, String)>, String)> {
+    let s = sig.trim();
+    let s = s.strip_prefix("pub ").unwrap_or(s);
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let open = s.find('(')?;
+    let name = s[..open].trim().strip_prefix("fn ")?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let close = llm::paren_span(&s, open)?;
+    let mut params = Vec::new();
+    for part in llm::split_top(&s[open + 1..close - 1]) {
+        let p = part.trim();
+        if p == "&self" || p == "&mut self" {
+            continue;
+        }
+        let (n, _) = p.split_once(':')?;
+        params.push((n.trim().to_string(), p.to_string()));
+    }
+    let rest = s[close..].trim();
+    let ret = rest
+        .strip_prefix("->")
+        .map(|r| r.trim().to_string())
+        .unwrap_or_default();
+    Some((name, params, ret))
+}
+
+/// The signature rendered with `_`-prefixed parameter names, for skeletons
+/// whose body reads no parameter (the crate is built with
+/// `#![deny(warnings)]`; names are free, types are not).
+fn underscored_signature(sig: &str) -> Option<String> {
+    let (name, params, ret) = parse_hook_signature(sig)?;
+    let rendered = params
+        .iter()
+        .map(|(n, full)| {
+            if n.starts_with('_') {
+                full.clone()
+            } else {
+                format!("_{full}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret_part = if ret.is_empty() {
+        String::new()
+    } else {
+        format!(" -> {ret}")
+    };
+    Some(format!("fn {name}(&self, {rendered}){ret_part}"))
 }
 
 /// What one feature's code generation produced.
@@ -411,6 +514,12 @@ fn llm_fallback(
                     if let Some(reason) = llm::signature_issue(&code, expected) {
                         issues.push((true, reason));
                     }
+                }
+                // The launcher constructs the mod's Hooks object with
+                // `<Struct>::default()`; without a `Default` the bundle could
+                // never be installed.
+                if let Some(reason) = llm::default_issue(&code) {
+                    issues.push((true, reason));
                 }
                 issues.extend(shared_lint(&code));
                 if issues.is_empty() {
@@ -643,6 +752,47 @@ fn module_slug(feature_id: &str) -> String {
     }
 }
 
+/// The launcher's bundle-id rule (`api::valid_id`): refuse at generation
+/// time what the launcher would refuse at load time.
+fn valid_bundle_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 100
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn write_zip_entry(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    name: &str,
+    content: &str,
+) -> Result<(), PortError> {
+    #![allow(clippy::result_large_err)]
+    zip.start_file(name, options).map_err(|e| {
+        PortError::new(
+            Phase::PortCode,
+            ErrorType::CompileError,
+            format!("zip: {e}"),
+        )
+    })?;
+    std::io::Write::write_all(zip, content.as_bytes()).map_err(|e| {
+        PortError::new(
+            Phase::PortCode,
+            ErrorType::CompileError,
+            format!("zip: {e}"),
+        )
+    })
+}
+
+/// Assemble the `.hnmod` bundle in the shape the launcher actually loads
+/// (verified against `horizon@6beacfe9` `launcher/src/native_mods/`): the
+/// bundle-root `horizon-native.json`, a trait-style `horizon-mixin.toml`
+/// (`[mod]` + `[compatibility]` + `[api]`), and an `engine/` crate whose
+/// `lib.rs` exports the `hooks()` entry point plus a `PortedHooks` wrapper
+/// delegating each catalog hook to the feature modules. Returns warnings for
+/// hooks that could not be wired (no extracted signature or no implementing
+/// module) — the bundle stays buildable, the hooks stay honest no-ops.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
 fn assemble_bundle(
@@ -654,7 +804,16 @@ fn assemble_bundle(
     hooks_used: &[HookRef],
     catalog: &HookCatalog,
     modules: &[(String, String)],
-) -> Result<(), PortError> {
+) -> Result<Vec<String>, PortError> {
+    if !valid_bundle_id(mod_id) {
+        return Err(PortError::new(
+            Phase::PortCode,
+            ErrorType::CompileError,
+            format!(
+                "mod id `{mod_id}` is not a valid Horizon bundle id (alphanumeric, `_`, `-`; at most 100 chars) — the launcher would refuse it at load time"
+            ),
+        ));
+    }
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -669,7 +828,7 @@ fn assemble_bundle(
     let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
-    // horizon-native.json (spec §0.6)
+    // horizon-native.json (spec §0.6) — the launcher's bundle-root manifest.
     let mut manifest = serde_json::json!({
         "schema": 1,
         "id": mod_id,
@@ -681,93 +840,67 @@ fn assemble_bundle(
     if !hooks_used.is_empty() {
         manifest["hooks"] = serde_json::json!(catalog.native_hooks_api);
     }
-    zip.start_file("horizon-native.json", options)
-        .map_err(|e| {
-            PortError::new(
-                Phase::PortCode,
-                ErrorType::CompileError,
-                format!("zip: {e}"),
-            )
-        })?;
-    std::io::Write::write_all(
+    write_zip_entry(
         &mut zip,
-        serde_json::to_string_pretty(&manifest).unwrap().as_bytes(),
-    )
-    .map_err(|e| {
-        PortError::new(
-            Phase::PortCode,
-            ErrorType::CompileError,
-            format!("zip: {e}"),
-        )
-    })?;
+        options,
+        "horizon-native.json",
+        &serde_json::to_string_pretty(&manifest).unwrap(),
+    )?;
 
-    // mixins/<id>/horizon-mixin.toml
-    let mut mixin_toml = String::new();
-    // mod_id comes from mod metadata (third-party text): escape it.
-    mixin_toml.push_str(&format!("id = \"{}\"\n", shared::util::toml_escape(mod_id)));
-    for hook in hooks_used {
-        mixin_toml.push_str(&format!(
-            "\n[[injection]]\nhook = \"{}\"\nhook_version = {}\nkind = \"HEAD\"\n",
-            shared::util::toml_escape(&hook.name),
-            hook.hook_version
-        ));
-    }
-    zip.start_file(format!("mixins/{mod_id}/horizon-mixin.toml"), options)
-        .map_err(|e| {
-            PortError::new(
-                Phase::PortCode,
-                ErrorType::CompileError,
-                format!("zip: {e}"),
-            )
-        })?;
-    std::io::Write::write_all(&mut zip, mixin_toml.as_bytes()).map_err(|e| {
-        PortError::new(
-            Phase::PortCode,
-            ErrorType::CompileError,
-            format!("zip: {e}"),
-        )
-    })?;
-
-    // mixins/<id>/src/lib.rs + modules
-    let mut lib = String::from(
-        "#![deny(warnings)]\n// Generated by auto-porter — implements the horizon_client::mod_api::Hooks trait.\n",
+    // mixins/<id>/horizon-mixin.toml — the per-mod manifest the launcher's
+    // `bundle()` parses. Trait-style mod: `[mod]` + `[compatibility]` +
+    // `[api]` and nothing else. No `[[injection]]` tables: every hook this
+    // bundle implements is a catalog trait hook, dispatched by the game
+    // through `mod_api::mods()`; a launcher-side injection would additionally
+    // demand `target`/`helper`/`bindings` we do not fabricate. Entries
+    // without an `id` are silently dropped by the launcher, so emitting them
+    // was never binding anyway.
+    let mixin_toml = format!(
+        "[mod]\nid = \"{}\"\nversion = \"{}\"\n\n# Tested against this Horizon build; horizon-native.json pins the same revision.\n[compatibility]\nhorizon_revision = \"{}\"\n\n# Trait-style mod: the launcher stages engine/ as a workspace crate,\n# calls its `hooks()` export and the game dispatches every catalog hook\n# to it through `mod_api::mods()` (docs/limitations.md §8).\n[api]\npath = \"engine\"\n",
+        shared::util::toml_escape(mod_id),
+        shared::util::toml_escape(version),
+        shared::util::toml_escape(horizon_rev),
     );
-    for (file_name, _) in modules {
-        let module = file_name.trim_end_matches(".rs");
-        lib.push_str(&format!("pub mod {module};\n"));
-    }
-    zip.start_file(format!("mixins/{mod_id}/src/lib.rs"), options)
-        .map_err(|e| {
-            PortError::new(
-                Phase::PortCode,
-                ErrorType::CompileError,
-                format!("zip: {e}"),
-            )
-        })?;
-    std::io::Write::write_all(&mut zip, lib.as_bytes()).map_err(|e| {
-        PortError::new(
-            Phase::PortCode,
-            ErrorType::CompileError,
-            format!("zip: {e}"),
-        )
-    })?;
+    write_zip_entry(
+        &mut zip,
+        options,
+        &format!("mixins/{mod_id}/horizon-mixin.toml"),
+        &mixin_toml,
+    )?;
+
+    // mixins/<id>/engine/ — the crate the launcher stages as `native-api/<id>`
+    // and links into its generated executable (`mod_<i>::hooks()`). Cargo
+    // cannot resolve the staged horizon-client from inside the bundle, so the
+    // dependency points at the launcher's final relative path; `api::stage`
+    // rewrites it either way. The crate version is fixed: the mod's real
+    // version lives in horizon-native.json and `[mod]`.
+    let engine_prefix = format!("mixins/{mod_id}/engine");
+    let crate_name = format!("horizon-mod-{}", mod_id.to_ascii_lowercase());
+    let engine_cargo = format!(
+        "# Generated by auto-porter: the mod's trait crate (manifest `[api] path = \"engine\"`).\n[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nhorizon-client = {{ path = \"../../crates/horizon-client\" }}\n"
+    );
+    write_zip_entry(
+        &mut zip,
+        options,
+        &format!("{engine_prefix}/Cargo.toml"),
+        &engine_cargo,
+    )?;
+
+    let (lib_rs, warnings) = engine_lib_rs(hooks_used, catalog, modules);
+    write_zip_entry(
+        &mut zip,
+        options,
+        &format!("{engine_prefix}/src/lib.rs"),
+        &lib_rs,
+    )?;
 
     for (file_name, content) in modules {
-        zip.start_file(format!("mixins/{mod_id}/src/{file_name}"), options)
-            .map_err(|e| {
-                PortError::new(
-                    Phase::PortCode,
-                    ErrorType::CompileError,
-                    format!("zip: {e}"),
-                )
-            })?;
-        std::io::Write::write_all(&mut zip, content.as_bytes()).map_err(|e| {
-            PortError::new(
-                Phase::PortCode,
-                ErrorType::CompileError,
-                format!("zip: {e}"),
-            )
-        })?;
+        write_zip_entry(
+            &mut zip,
+            options,
+            &format!("{engine_prefix}/src/{file_name}"),
+            content,
+        )?;
     }
 
     zip.finish().map_err(|e| {
@@ -777,7 +910,126 @@ fn assemble_bundle(
             format!("zip: {e}"),
         )
     })?;
-    Ok(())
+    Ok(warnings)
+}
+
+/// The engine crate's `lib.rs`: the feature modules plus the `PortedHooks`
+/// wrapper the launcher installs. Each catalog hook in `hooks_used` is
+/// delegated to every feature module implementing it, in feature order,
+/// mirroring the game's own dispatch (all mods run; `Flow::Cancel`
+/// short-circuits). Hooks whose exact signature the table does not carry stay
+/// unwired and are reported as warnings instead of being guessed.
+fn engine_lib_rs(
+    hooks_used: &[HookRef],
+    catalog: &HookCatalog,
+    modules: &[(String, String)],
+) -> (String, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut header = String::from(
+        "#![deny(warnings)]\n// Generated by auto-porter — implements the horizon_client::mod_api::Hooks trait.\n// Trait-style bundle: the manifest carries `[api] path = \"engine\"`; the\n// launcher stages this crate, calls `hooks()` and the game dispatches every\n// catalog hook to it through `mod_api::mods()`.\n\n#[allow(unused_imports)]\nuse horizon_client::mod_api::*;\n\n",
+    );
+    let mut fields = String::new();
+    for (file_name, content) in modules {
+        let module = file_name.trim_end_matches(".rs");
+        header.push_str(&format!("pub mod {module};\n"));
+        // The LLM contract and the templates both spell the impl
+        // `impl horizon_client::mod_api::Hooks for <Struct>`.
+        match llm::hooks_impl_struct(content) {
+            Some(s) => fields.push_str(&format!("    {module}: {module}::{s},\n")),
+            None => warnings.push(format!(
+                "module `{module}` declares no `impl horizon_client::mod_api::Hooks for <Struct>`; it cannot take part in the mod's hook dispatch"
+            )),
+        }
+    }
+
+    let mut methods = String::new();
+    for hook in hooks_used {
+        match hook_delegation(hook, catalog, modules) {
+            Some(code) => methods.push_str(&code),
+            None => match catalog.signature(&hook.name) {
+                Some(_) => warnings.push(format!(
+                    "hook `{}` has a signature but no implementing module; it stays unwired",
+                    hook.name
+                )),
+                None => warnings.push(format!(
+                    "hook `{}` has no extracted signature; the bundle stays buildable but the hook stays unwired",
+                    hook.name
+                )),
+            },
+        }
+    }
+
+    let lib = format!(
+        "{header}\n/// Every feature module's hooks, constructed with `<_>::default()` by the\n/// launcher's generated entry point. The delegations below forward each\n/// catalog hook to the feature modules that implement it.\n#[derive(Default)]\npub struct PortedHooks {{\n{fields}}}\n\nimpl horizon_client::mod_api::Hooks for PortedHooks {{\n{methods}}}\n\n/// The launcher's entry point: one boxed `Hooks` object per api crate.\npub fn hooks() -> Box<dyn horizon_client::mod_api::Hooks> {{\n    Box::new(PortedHooks::default())\n}}\n"
+    );
+    (lib, warnings)
+}
+
+/// One delegating trait method for `hook`, forwarding to every module that
+/// implements it. Listen hooks call all implementers; `Flow` hooks
+/// short-circuit on `Flow::Cancel` (the game skips later mods after a
+/// cancellation); value hooks take the first implementer's answer.
+fn hook_delegation(
+    hook: &HookRef,
+    catalog: &HookCatalog,
+    modules: &[(String, String)],
+) -> Option<String> {
+    let sig = catalog.signature(&hook.name)?;
+    let (_, params, ret) = parse_hook_signature(&sig.signature)?;
+    let needle = format!("fn {}(", hook.name);
+    let implementers: Vec<String> = modules
+        .iter()
+        .filter(|(_, c)| c.contains(&needle))
+        .map(|(f, _)| f.trim_end_matches(".rs").to_string())
+        .collect();
+    if implementers.is_empty() {
+        return None;
+    }
+    let args = params
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let params_text = params
+        .iter()
+        .map(|(_, p)| p.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let params_part = if params.is_empty() {
+        String::new()
+    } else {
+        format!(", {params_text}")
+    };
+    let ret_part = if ret.is_empty() {
+        String::new()
+    } else {
+        format!(" -> {ret}")
+    };
+    let mut out = format!(
+        "    fn {}(&self{}){} {{\n",
+        hook.name, params_part, ret_part
+    );
+    if ret.is_empty() {
+        for module in &implementers {
+            out.push_str(&format!("        self.{module}.{}({args});\n", hook.name));
+        }
+    } else if ret == "Flow" {
+        let (last, earlier) = implementers.split_last().expect("non-empty above");
+        for module in earlier {
+            out.push_str(&format!(
+                "        if let Flow::Cancel = self.{module}.{}({args}) {{\n            return Flow::Cancel;\n        }}\n",
+                hook.name
+            ));
+        }
+        out.push_str(&format!("        self.{last}.{}({args})\n", hook.name));
+    } else {
+        out.push_str(&format!(
+            "        // value hook: the first implementing feature answers\n        self.{}.{}({args})\n",
+            implementers[0], hook.name
+        ));
+    }
+    out.push_str("    }\n");
+    Some(out)
 }
 
 fn which(name: &str) -> bool {

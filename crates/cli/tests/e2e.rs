@@ -190,6 +190,153 @@ fn data_only_mode_skips_code_generation() {
 }
 
 #[test]
+fn emitted_bundle_matches_launcher_contract() {
+    // Bindability (docs/limitations.md §8): the emitted .hnmod must be the
+    // shape the launcher's `bundle()` + `api::folder` + generated `main`
+    // actually load — trait-style manifest with [api], an engine crate with
+    // a horizon-client dependency, a `hooks()` entry point, and a
+    // `PortedHooks` wrapper delegating the catalog hooks. Verified against
+    // `horizon@6beacfe9` `launcher/src/native_mods/`.
+    use std::io::{Read as _, Write};
+    use std::net::TcpListener;
+
+    let _env = env_lock();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _raw = read_http_request(&mut stream);
+            let code = "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}";
+            let payload = serde_json::json!({
+                "choices": [{"message": {"content": code}}]
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let jar = ws("tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar");
+    let tmp = std::env::temp_dir().join(format!("ap-bindable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    std::env::set_var("OPENAI_API_KEY", "test-key-for-bindability");
+    let mut cfg = PorterConfig::default();
+    cfg.llm.provider = "openai".to_string();
+    cfg.llm.base_url = Some(format!("http://{addr}/v1/chat/completions"));
+    cfg.llm.retry_delay_ms = 1;
+    let out_dir = tmp.join("out");
+    let opts = PortOptions {
+        horizon_revision: None,
+        data_only: false,
+        output: out_dir.clone(),
+        verbose: false,
+        hooks_json: None,
+        pack_classes: Vec::new(),
+        source_dir: None,
+    };
+    let ported = port(&jar, &cfg, &opts);
+    std::env::remove_var("OPENAI_API_KEY");
+    ported.expect("port succeeds");
+    let hnmod = out_dir.join("chunkcourier.hnmod");
+    assert!(hnmod.is_file(), ".hnmod emitted");
+
+    let file = std::fs::File::open(&hnmod).expect("open hnmod");
+    let mut archive = zip::ZipArchive::new(file).expect("zip archive");
+    fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> String {
+        let mut s = String::new();
+        archive
+            .by_name(name)
+            .unwrap_or_else(|e| panic!("entry {name}: {e}"))
+            .read_to_string(&mut s)
+            .expect("read entry");
+        s
+    }
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).expect("entry").name().to_string())
+        .collect();
+
+    // Manifest: trait-style only — [mod] + [compatibility] + [api], no
+    // injections (the launcher drops entries without an id, so emitting them
+    // would be inert anyway).
+    let mixin = read_entry(&mut archive, "mixins/chunkcourier/horizon-mixin.toml");
+    assert!(mixin.contains("[mod]") && mixin.contains("id = \"chunkcourier\""));
+    assert!(mixin.contains("[compatibility]") && mixin.contains("horizon_revision = \""));
+    assert!(mixin.contains("[api]") && mixin.contains("path = \"engine\""));
+    assert!(
+        !mixin.contains("[[injection]]"),
+        "trait bundles carry no injections"
+    );
+
+    // Engine crate: the launcher stages it and rewrites the horizon-client dep.
+    let cargo = read_entry(&mut archive, "mixins/chunkcourier/engine/Cargo.toml");
+    assert!(cargo.contains("name = \"horizon-mod-chunkcourier\""));
+    assert!(cargo.contains("horizon-client"));
+    assert!(cargo.contains("edition = \"2024\""));
+
+    // Engine lib.rs: entry point + wrapper + delegation with the REAL trait
+    // signature (official parameter names from the extracted table).
+    let lib = read_entry(&mut archive, "mixins/chunkcourier/engine/src/lib.rs");
+    assert!(lib.starts_with("#![deny(warnings)]"));
+    assert!(
+        lib.contains("pub fn hooks()"),
+        "launcher entry point present"
+    );
+    assert!(lib.contains("Box::new(PortedHooks::default())"));
+    assert!(lib.contains("pub struct PortedHooks"));
+    assert!(lib.contains("impl horizon_client::mod_api::Hooks for PortedHooks"));
+    assert!(
+        lib.contains("::ChunkcourierTick"),
+        "wrapper holds the module's Hooks struct"
+    );
+    assert!(
+        lib.contains("fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent)"),
+        "delegation copies the real signature: {lib}"
+    );
+
+    // Feature modules moved into the engine crate, struct constructible.
+    let engine_src: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("mixins/chunkcourier/engine/src/") && n.ends_with(".rs"))
+        .collect();
+    assert!(
+        engine_src.len() >= 2,
+        "lib.rs plus at least the LLM and a template module: {engine_src:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.starts_with("mixins/chunkcourier/engine/src/") && !n.ends_with("lib.rs")),
+        "feature modules live under engine/src/"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.starts_with("mixins/chunkcourier/src/")),
+        "the old src/ layout is gone"
+    );
+
+    // No unresolved template placeholders anywhere in the engine sources.
+    for name in &engine_src {
+        let body = read_entry(&mut archive, name);
+        assert!(
+            !body.contains("{{"),
+            "{name} carries unresolved placeholders: {body:.160}"
+        );
+    }
+
+    // The verify layer accepts the bundle: no failing issue at all.
+    let verdict = verify::hnmod::validate(&hnmod, None, None);
+    assert!(verdict.pass, "verify passes: {:?}", verdict.issues);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 fn llm_retries_through_nvidia_degraded_400s() {
     // The NVIDIA NIM gateway answers HTTP 400 "DEGRADED function cannot be
     // invoked" while the deployment behind a model id is degraded (observed
@@ -220,7 +367,7 @@ fn llm_retries_through_nvidia_degraded_400s() {
             } else {
                 (
                     "200 OK",
-                    r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// LLM-generated tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#,
+                    r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// LLM-generated tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#,
                 )
             };
             let resp = format!(
@@ -993,7 +1140,7 @@ fn llm_prompt_carries_real_upstream_source() {
             if let Some(body) = req.split("\r\n\r\n").nth(1) {
                 *store.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             }
-            let body = r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported with upstream source.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#;
+            let body = r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported with upstream source.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -1086,9 +1233,9 @@ fn llm_repairs_rejected_output() {
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             // attempt 1: lint-dirty (`unsafe`); attempt 2: clean
             let code = if n == 0 {
-                "use horizon_client::mod_api::*;\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) { unsafe { let _x = 1; } }\n}"
+                "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) { unsafe { let _x = 1; } }\n}"
             } else {
-                "use horizon_client::mod_api::*;\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"
+                "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"
             };
             let payload = serde_json::json!({
                 "choices": [{"message": {"content": code}}]

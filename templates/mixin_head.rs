@@ -1,14 +1,11 @@
 // Template: mixin_head.rs
-// Generic Mixin carried as a horizon-mixins injection (kind = "HEAD"; trait
-// injections are limited to HEAD per PR #3964). The [[injection]] entry in
-// horizon-mixin.toml is emitted by the generator; the method below implements
-// the hook the injection binds to.
+// Generic hook skeleton: one catalog trait method, dispatched by the game
+// through `mod_api::mods()` — no [[injection]] tables on the trait path
+// (docs/limitations.md §8). The method signature is rendered from the
+// extracted hook-signature table at the pinned revision.
+#[derive(Default)]
 pub struct {{STRUCT_NAME}};
 
 impl horizon_client::mod_api::Hooks for {{STRUCT_NAME}} {
-    /// {{FEATURE_TITLE}} — ported from {{JAVA_SOURCE}}.
-    fn {{HOOK_NAME}}(&mut self) {
-        // {{ACTION_NOTE}}
-        // {{TODO}}
-    }
+{{HOOK_METHOD_BLOCK}}
 }

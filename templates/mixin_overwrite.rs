@@ -1,13 +1,12 @@
 // Template: mixin_overwrite.rs
-// Generic Mixin @Overwrite: replaces the target method body through the
-// horizon-mixins apply step. Use sparingly; HEAD/replace hooks are preferred
-// and keep the port reviewable.
+// Behaviour replacement: the hook whose event carries the target value
+// (replace/override contract) writes the new value into the event fields.
+// Use sparingly; listen/cancel hooks are preferred and keep the port
+// reviewable. The method signature is rendered from the extracted
+// hook-signature table.
+#[derive(Default)]
 pub struct {{STRUCT_NAME}};
 
 impl horizon_client::mod_api::Hooks for {{STRUCT_NAME}} {
-    /// {{FEATURE_TITLE}} — ported from {{JAVA_SOURCE}}.
-    fn {{HOOK_NAME}}(&mut self) {
-        // {{ACTION_NOTE}}
-        // {{TODO}}
-    }
+{{HOOK_METHOD_BLOCK}}
 }
