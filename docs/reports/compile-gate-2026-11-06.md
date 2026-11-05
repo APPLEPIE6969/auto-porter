@@ -82,3 +82,16 @@ Booting the game with the bundle installed and watching hooks dispatch
 (`horizon-ctl`, Agent Control) — the last mile of §5.2. Contract v3.2's
 prompt change is validated by a dedicated soak round (see the LLM soak
 reports).
+
+## Addendum: CI moved to a hosted runner
+
+There is no self-hosted machine in this setup, so the queued
+`[self-hosted, horizon]` job could never start. `bundle-compile.yml` now
+runs on GitHub-hosted `ubuntu-latest` — the gate is fully headless (no
+game client, no display, no licensed assets), so nothing else changes:
+same mock-LLM port, same launcher-style pipeline, same honest verdicts.
+Cold-start cost is handled with caches (pinned source archive, mixins
+tool, cargo target) plus a free-disk-space step for the multi-GB Horizon
+check cache. The game-client jobs in port-test.yml (parity / in-game /
+modpack sweep) keep their `HORIZON_SELFHOSTED` guard: they genuinely
+need a licensed MC copy and stay skipped.

@@ -131,8 +131,10 @@ type-checks (reason carries the pipeline summary), `Fail` with the compiler
 output tail, `Skipped` naming the missing prerequisite (no source, no cargo,
 no horizon-mixins) — a skipped gate counts as a warning, never as a pass,
 and a failing one fails the verification report. The gate is exercised on
-every push by `.github/workflows/bundle-compile.yml` on the self-hosted
-runner: a mock-LLM port of the fixture jar, compiled against real Horizon.
+every push by `.github/workflows/bundle-compile.yml` on a GitHub-hosted
+`ubuntu-latest` runner (the gate is fully headless; pinned source, mixins
+tool and cargo target are cached between runs): a mock-LLM port of the
+fixture jar, compiled against real Horizon.
 Its first swing caught three real emitter bugs the static lint could never
 see (feature modules missing `use horizon_client::mod_api::*;`, template
 skeletons returning `()` where the trait wants `Flow`/`Option`, and
@@ -283,8 +285,10 @@ Honest fallbacks, not fabrications: a hook without an extracted signature
 keeps the crate buildable and the hook is reported as unwired; the bundle
 assembler returns the same warnings into the report. What remains deferred is
 the last mile of §5.2: booting the game with the bundle installed and
-watching the hooks dispatch in-game (`horizon-ctl` + Agent Control on the
-self-hosted runner). Compiling the bundle is no longer deferred — the
+watching the hooks dispatch in-game (`horizon-ctl` + Agent Control — needs
+a machine with the actual Horizon game client, which does not exist in this
+setup; the self-hosted tier in port-test.yml stays guarded off until one
+does). Compiling the bundle is no longer deferred — the
 launcher-style build runs headlessly in `porter verify --compile` (§3) and in
 ci (bundle-compile.yml). `trait_method` injections for non-catalog targets
 are still not generated.

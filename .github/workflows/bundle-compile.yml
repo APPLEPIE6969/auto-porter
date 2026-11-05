@@ -7,9 +7,10 @@ name: Bundle Compile
 # --no-default-features -p horizon-native-game`. The bundle comes from a
 # hermetic mock-LLM port, so this job proves the EMITTER (templates,
 # manifest, delegation wrapper) against the real Horizon crates without any
-# network LLM. Runs on the self-hosted horizon runner: the first run
-# type-checks the whole Horizon tree (slow); later runs reuse the cached
-# target dir and only recheck what changed.
+# network LLM. Runs on a GitHub-hosted `ubuntu-latest` runner (the gate is
+# fully headless): the first run type-checks the whole Horizon tree (cold,
+# slow); later runs restore the cached target dir and only recheck what
+# changed.
 #
 # Honesty rules (same as the gate itself): the job fails when the gate is
 # skipped, and a skipped gate is never counted as a pass.
@@ -27,13 +28,19 @@ env:
 
 jobs:
   compile-gate:
-    # The launcher-style build needs the pinned toolchain, disk for the
-    # Horizon check cache and no desktop-session constraints: the
-    # self-hosted horizon runner.
-    runs-on: [self-hosted, horizon]
+    # Headless `cargo check` against the pinned Horizon tree: no game client,
+    # no display, no licensed assets — any 4-core hosted runner will do. The
+    # big cost is disk (the Horizon check cache is multi-GB), freed below.
+    runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free disk space (the Horizon check cache is multi-GB)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -58,6 +65,12 @@ jobs:
           key: horizon-gate-target-${{ steps.pins.outputs.revision }}-${{ github.sha }}
           restore-keys: |
             horizon-gate-target-${{ steps.pins.outputs.revision }}-
+
+      - name: Cache horizon-mixins (built from source)
+        uses: actions/cache@v4
+        with:
+          path: .gate-tools
+          key: horizon-mixins-${{ steps.pins.outputs.mixins }}
 
       - name: Install horizon-mixins at the pinned revision
         run: |
