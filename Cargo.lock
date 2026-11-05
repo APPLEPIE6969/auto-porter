@@ -982,10 +982,13 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 name = "verify"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "serde",
  "serde_json",
  "shared",
+ "tar",
  "toml",
+ "ureq",
  "zip",
 ]
 

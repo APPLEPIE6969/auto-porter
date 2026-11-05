@@ -8,6 +8,8 @@ hooks_json      = "hooks/native-hooks.json"                    # committed snaps
 client_path     = "~/.horizon/horizon-client"
 ctl_path        = "~/.horizon/horizon-ctl"
 port_pack_path  = "~/.cargo/bin/horizon-port-pack"
+mixins_path     = "~/.cargo/bin/horizon-mixins"   # compile gate: bundles with mixin content need the staging engine
+source_dir      = ""                              # compile gate: Horizon checkout at `revision`; empty = $AUTO_PORTER_HORIZON_SOURCE, else the pinned archive is fetched once
 
 [llm]
 provider     = "nvidia"                       # "anthropic", "openai"

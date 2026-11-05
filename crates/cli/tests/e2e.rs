@@ -207,7 +207,7 @@ fn emitted_bundle_matches_launcher_contract() {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let _raw = read_http_request(&mut stream);
-            let code = "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}";
+            let code = "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}";
             let payload = serde_json::json!({
                 "choices": [{"message": {"content": code}}]
             })
@@ -336,6 +336,73 @@ fn emitted_bundle_matches_launcher_contract() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// The compile gate never fakes a result: without a Horizon source it reports
+/// `Skipped` naming the missing prerequisite — never `Pass` (docs/limitations.md §3).
+#[test]
+fn compile_gate_skips_honestly_without_a_horizon_source() {
+    use shared::config::PorterConfig;
+
+    let _env = env_lock();
+    let tmp = std::env::temp_dir().join(format!("gate-skip-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("tmp");
+
+    // A minimal trait-style bundle: manifest + [api] engine crate (the gate
+    // unpacks and parses it before it can name what is missing).
+    let hnmod = tmp.join("chunkcourier.hnmod");
+    let file = std::fs::File::create(&hnmod).expect("hnmod");
+    let mut zip = zip::ZipWriter::new(file);
+    let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("horizon-native.json", options)
+        .expect("entry");
+    std::io::Write::write_all(
+        &mut zip,
+        br#"{"schema":1,"id":"chunkcourier","version":"1.0.0","game":"26.3"}"#,
+    )
+    .unwrap();
+    zip.start_file("mixins/chunkcourier/horizon-mixin.toml", options)
+        .expect("entry");
+    std::io::Write::write_all(
+        &mut zip,
+        b"[mod]\nid = \"chunkcourier\"\nversion = \"1.0.0\"\n\n[compatibility]\nhorizon_revision = \"6beacfe91a0074a783261d10383b7c8a77cb4cd1\"\n\n[api]\npath = \"engine\"\n",
+    )
+    .unwrap();
+    zip.start_file("mixins/chunkcourier/engine/Cargo.toml", options)
+        .expect("entry");
+    std::io::Write::write_all(
+        &mut zip,
+        b"[package]\nname = \"horizon-mod-chunkcourier\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nhorizon-client = \"0.1\"\n",
+    )
+    .unwrap();
+    zip.start_file("mixins/chunkcourier/engine/src/lib.rs", options)
+        .expect("entry");
+    std::io::Write::write_all(
+        &mut zip,
+        b"pub fn hooks() -> Box<dyn horizon_client::mod_api::Hooks> { todo!() }\n",
+    )
+    .unwrap();
+    drop(zip);
+
+    // A pinned revision (the placeholder short-circuits with its own reason)
+    // and a source override that cannot exist: the gate must skip, naming it.
+    let mut cfg = PorterConfig::default();
+    cfg.horizon.revision = "6beacfe91a0074a783261d10383b7c8a77cb4cd1".to_string();
+    std::env::set_var("AUTO_PORTER_HORIZON_SOURCE", "/nonexistent/horizon-source");
+    let report = verify_dir(&tmp, &cfg, false, true, false, false, false).expect("verify runs");
+    std::env::remove_var("AUTO_PORTER_HORIZON_SOURCE");
+
+    assert_eq!(report.compile.status, shared::report::CheckStatus::Skipped);
+    let reason = report.compile.reason.expect("skipped with a reason");
+    assert!(
+        reason.contains("not a Horizon source tree"),
+        "reason names the bad source: {reason}"
+    );
+    assert_ne!(report.compile.status, shared::report::CheckStatus::Pass);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 #[test]
 fn llm_retries_through_nvidia_degraded_400s() {
     // The NVIDIA NIM gateway answers HTTP 400 "DEGRADED function cannot be
@@ -367,7 +434,7 @@ fn llm_retries_through_nvidia_degraded_400s() {
             } else {
                 (
                     "200 OK",
-                    r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// LLM-generated tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#,
+                    r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// LLM-generated tick hook.\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}"}}]}"#,
                 )
             };
             let resp = format!(
@@ -1140,7 +1207,7 @@ fn llm_prompt_carries_real_upstream_source() {
             if let Some(body) = req.split("\r\n\r\n").nth(1) {
                 *store.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             }
-            let body = r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported with upstream source.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"}}]}"#;
+            let body = r#"{"choices":[{"message":{"content":"use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported with upstream source.\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}"}}]}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -1233,9 +1300,9 @@ fn llm_repairs_rejected_output() {
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             // attempt 1: lint-dirty (`unsafe`); attempt 2: clean
             let code = if n == 0 {
-                "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) { unsafe { let _x = 1; } }\n}"
+                "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) { unsafe { let _x = 1; } }\n}"
             } else {
-                "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}"
+                "use horizon_client::mod_api::*;\n#[derive(Default)]\npub struct ChunkcourierTick;\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    /// ported tick hook.\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}"
             };
             let payload = serde_json::json!({
                 "choices": [{"message": {"content": code}}]

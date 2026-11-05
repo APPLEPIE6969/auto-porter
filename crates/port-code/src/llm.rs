@@ -56,7 +56,9 @@ pub struct ExampleDiamondGate;
 
 impl horizon_client::mod_api::Hooks for ExampleDiamondGate {
     /// Ported from NoPickupDelay::onItemPickup: veto absurd diamond pickups.
-    fn item_picked_up(&self, host: &mut dyn Host, event: &mut ItemPickedUpEvent<'_>) -> Flow {
+    /// (`_host`: unused here — unused parameters are underscore-prefixed, the
+    /// crate builds with `#![deny(warnings)]`.)
+    fn item_picked_up(&self, _host: &mut dyn Host, event: &mut ItemPickedUpEvent<'_>) -> Flow {
         if event.item.ends_with("diamond") && event.count > 64 {
             return Flow::Cancel; // veto: later mods and the game's pickup are skipped
         }
@@ -677,6 +679,118 @@ pub fn default_issue(code: &str) -> Option<String> {
     ))
 }
 
+/// Unused parameters must be underscore-prefixed: the bundle's crate carries
+/// `#![deny(warnings)]`, so a stub body that never reads `host`/`event` fails
+/// the launcher-style build (Horizon's own `mod_api_hooks.rs` test writes
+/// `_host`). Only names the body never mentions are flagged — a cheap check
+/// that can miss exotic cases (the compile gate catches those) but never
+/// rejects a name the body uses.
+pub fn unused_param_issue(code: &str, expected_signature: &str) -> Option<String> {
+    if is_infeasible(code) {
+        return None; // honest skip: no method is generated
+    }
+    let expected = normalize_signature(expected_signature);
+    let name = expected
+        .strip_prefix("fn ")
+        .and_then(|rest| rest.split('(').next())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return None; // unparsable expectation: do not guess
+    }
+    let needle = format!("fn {name}");
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(&needle) {
+        let abs = from + rel;
+        from = abs + needle.len();
+        if let Some(prev) = code[..abs].chars().next_back() {
+            if prev.is_alphanumeric() || prev == '_' {
+                continue;
+            }
+        }
+        let Some(open_rel) = code[from..].find('(') else {
+            break;
+        };
+        if !code[from..from + open_rel].trim().is_empty() {
+            continue;
+        }
+        let open = from + open_rel;
+        let Some(close) = paren_span(code, open) else {
+            break;
+        };
+        let Some(body_open_rel) = code[close..].find('{') else {
+            break;
+        };
+        let body_open = close + body_open_rel;
+        let Some(body_close) = brace_span(code, body_open) else {
+            break;
+        };
+        let params = &code[open + 1..close - 1];
+        let body = &code[body_open..body_close];
+        for part in split_top(params) {
+            let Some(colon) = part.rfind(':') else {
+                continue; // the `&self` receiver has no name
+            };
+            let raw = part[..colon].trim();
+            let pname = raw
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .trim_start_matches('&');
+            if pname.is_empty() || pname.starts_with('_') {
+                continue;
+            }
+            if !body_contains_word(body, pname) {
+                return Some(format!(
+                    "parameter `{pname}` of `fn {name}` is never used; the crate builds with `#![deny(warnings)]` — prefix unused parameters with `_` (e.g. `_{pname}`)"
+                ));
+            }
+        }
+        return None; // the first well-formed occurrence is the implementation
+    }
+    None // no parsable method: signature_issue reports that
+}
+
+/// Index just past the `}` closing the brace group opened at `open`.
+fn brace_span(code: &str, open: usize) -> Option<usize> {
+    let mut depth = 0i64;
+    for (i, c) in code[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Word-boundary containment: `event` matches `event.key` but not `my_event`
+/// or `events`.
+fn body_contains_word(body: &str, word: &str) -> bool {
+    let wb = |i: usize| {
+        body.as_bytes()
+            .get(i)
+            .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .unwrap_or(false)
+    };
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find(word) {
+        let abs = from + rel;
+        let after = abs + word.len();
+        if (abs == 0 || !wb(abs - 1)) && !wb(after) {
+            return true;
+        }
+        from = after.max(abs + 1);
+    }
+    false
+}
+
 /// Structural decomposition of a signature header: (fn name, parameter
 /// types in order, return type or ""). Parameter NAMES are dropped (the
 /// contract allows `_host`-style prefixes); everything else must match.
@@ -1233,5 +1347,39 @@ mod tests {
             default_issue(wrong_struct).is_some(),
             "Default on another struct does not count"
         );
+    }
+
+    #[test]
+    fn unused_param_issue_demands_underscore_prefixes() {
+        let expected = "fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent)";
+        // The deny(warnings) violation the first gate run caught: a stub body
+        // that reads neither parameter.
+        let bare = "use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct M;\n\nimpl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {}\n}";
+        let issue = unused_param_issue(bare, expected).expect("unused host+event rejected");
+        assert!(
+            issue.contains("`host`") && issue.contains("`_`"),
+            "reason names the parameter and the fix: {issue}"
+        );
+        // Underscored stubs pass — Horizon's own mod_api_hooks.rs style.
+        let underscored = bare.replace("host:", "_host:").replace("event:", "_event:");
+        assert_eq!(unused_param_issue(&underscored, expected), None);
+        // A parameter the body actually uses is never flagged; the sibling
+        // that stays unread still is.
+        let uses_event = "impl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {\n        let _ = event;\n    }\n}";
+        let issue = unused_param_issue(uses_event, expected).expect("`host` still rejected");
+        assert!(
+            issue.contains("`host`") && !issue.contains("`event`"),
+            "only the unused one is named: {issue}"
+        );
+        let uses_both = "impl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {\n        let _ = event;\n        let _ = &host;\n    }\n}";
+        assert_eq!(unused_param_issue(uses_both, expected), None);
+        // A name that merely appears inside a longer identifier is not a use.
+        let decoy = "impl horizon_client::mod_api::Hooks for M {\n    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {\n        let _events = 1;\n    }\n}";
+        assert!(
+            unused_param_issue(decoy, expected).is_some(),
+            "`_events` does not use `event`"
+        );
+        // The sentinel is exempt.
+        assert_eq!(unused_param_issue(PORT_INFEASIBLE, expected), None);
     }
 }

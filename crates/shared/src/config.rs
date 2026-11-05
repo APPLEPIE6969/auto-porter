@@ -20,6 +20,14 @@ pub struct HorizonCfg {
     pub client_path: String,
     pub ctl_path: String,
     pub port_pack_path: String,
+    /// Path to the `horizon-mixins` binary (the staging engine the launcher
+    /// uses; needed by the compile gate only for bundles that carry mixin
+    /// content — injection/bridge/module/state/crate tables).
+    pub mixins_path: String,
+    /// Path to a Horizon source checkout at `revision` for the compile gate.
+    /// Empty (the default) means: `AUTO_PORTER_HORIZON_SOURCE`, else the
+    /// gate fetches the pinned codeload archive once into a cache dir.
+    pub source_dir: String,
 }
 
 impl Default for HorizonCfg {
@@ -32,6 +40,8 @@ impl Default for HorizonCfg {
             client_path: "~/.horizon/horizon-client".to_string(),
             ctl_path: "~/.horizon/horizon-ctl".to_string(),
             port_pack_path: "~/.cargo/bin/horizon-port-pack".to_string(),
+            mixins_path: "~/.cargo/bin/horizon-mixins".to_string(),
+            source_dir: String::new(),
         }
     }
 }

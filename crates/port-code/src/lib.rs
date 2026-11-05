@@ -214,22 +214,11 @@ pub fn port_code(
     }
 
     // ---- compile gate: only the launcher-style build counts (spec §5.2.4)
-    let compile = if cfg.expand(&cfg.horizon.ctl_path).is_file() || which("horizon-ctl") {
-        // The launcher build path exists on this machine; the gate itself is
-        // executed by the horizon-ctl driven verification layer.
-        CompileResult {
-            status: CheckStatus::Skipped,
-            reason: Some(
-                "compile gate runs through the horizon-ctl verification layer (verify --in-game); it is not part of code generation".to_string(),
-            ),
-        }
-    } else {
-        CompileResult {
-            status: CheckStatus::Skipped,
-            reason: Some(
-                "launcher-style build unavailable in this environment: horizon-ctl not found; a standalone cargo check is not possible for native mods (docs/native-mods.md)".to_string(),
-            ),
-        }
+    let compile = CompileResult {
+        status: CheckStatus::Skipped,
+        reason: Some(
+            "code generation does not build; run `porter verify --compile` for the launcher-style gate (docs/limitations.md §3)".to_string(),
+        ),
     };
 
     CodeGenOutcome {
@@ -309,10 +298,23 @@ fn render_template(
     // survive verbatim for the replace chain below.
     let method_block = match signature.and_then(underscored_signature) {
         Some(sig) => {
+            // A no-op body must still satisfy the signature: Flow hooks
+            // continue, Option hooks provide nothing, listen hooks do
+            // nothing. (`deny(warnings)` also rules out leaving a named
+            // parameter unread — underscored_signature handles that.)
+            let body = if sig.contains("-> Flow") {
+                "\n        Flow::Continue\n    "
+            } else if sig.contains("-> Option") {
+                "\n        None\n    "
+            } else {
+                ""
+            };
             String::from(
                 "    /// {{FEATURE_TITLE}} — ported from {{JAVA_SOURCE}}.\n    // Contract: {{CONTRACT}}. Condition: {{CONDITION}}\n    // {{ACTION_NOTE}}\n    // {{TODO}}\n    ",
             ) + &sig
-                + " {\n    }"
+                + " {"
+                + body
+                + "}"
         }
         None => String::from(
             "    /// {{FEATURE_TITLE}} — ported from {{JAVA_SOURCE}}.\n    // The exact trait signature for `{{HOOK_NAME}}` is not in the extracted\n    // signature table, so no method is emitted: the trait method keeps its\n    // default (no-op) and this hook stays unwired — see the port report.\n    // Add the method once the signature is pinned.\n    // {{ACTION_NOTE}}",
@@ -339,6 +341,15 @@ fn render_template(
         .replace("{{ACTION_NOTE}}", &action_note)
         .replace("{{TODO}}", &todo)
         .replace("{{STRUCT_NAME}}", &struct_name);
+    // A glob in lib.rs does not extend into child modules: every feature
+    // module names `mod_api` types (Host, event structs, Flow) in the real
+    // trait signatures, so each module imports them itself. Caught by the
+    // launcher-style compile gate, not by the static lint (§5.2).
+    let code = if code.contains("use horizon_client::mod_api") {
+        code
+    } else {
+        format!("#[allow(unused_imports)]\nuse horizon_client::mod_api::*;\n\n{code}")
+    };
     if verbose {
         eprintln!(
             "  [port-code] rendered {template_name} -> {} ({})",
@@ -520,6 +531,14 @@ fn llm_fallback(
                 // never be installed.
                 if let Some(reason) = llm::default_issue(&code) {
                     issues.push((true, reason));
+                }
+                // The crate builds with `#![deny(warnings)]`: a stub body that
+                // never reads a non-underscored parameter fails the
+                // launcher-style build, so the contract demands `_host` now.
+                if let Some(expected) = sig.map(|s| s.signature.as_str()) {
+                    if let Some(reason) = llm::unused_param_issue(&code, expected) {
+                        issues.push((true, reason));
+                    }
                 }
                 issues.extend(shared_lint(&code));
                 if issues.is_empty() {
@@ -1037,10 +1056,4 @@ fn hook_delegation(
     }
     out.push_str("    }\n");
     Some(out)
-}
-
-fn which(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
 }

@@ -1,6 +1,7 @@
 //! Phase 5: Verify — static gates (spec §6.1) plus the parity / in-game
 //! orchestration (spec §6.2/§6.3, driven through the Python harnesses).
 
+pub mod compile;
 pub mod hmod;
 pub mod hnmod;
 pub mod runner;

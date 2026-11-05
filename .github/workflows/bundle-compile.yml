@@ -1,0 +1,132 @@
+name: Bundle Compile
+
+# The compile gate (docs/limitations.md §3, spec §5.2.4): a generated bundle
+# is staged and compiled the way the launcher actually builds native mods —
+# pristine Horizon source at the pinned revision, the launcher's
+# `api::stage`-equivalent steps, `cargo check --locked --profile fast
+# --no-default-features -p horizon-native-game`. The bundle comes from a
+# hermetic mock-LLM port, so this job proves the EMITTER (templates,
+# manifest, delegation wrapper) against the real Horizon crates without any
+# network LLM. Runs on the self-hosted horizon runner: the first run
+# type-checks the whole Horizon tree (slow); later runs reuse the cached
+# target dir and only recheck what changed.
+#
+# Honesty rules (same as the gate itself): the job fails when the gate is
+# skipped, and a skipped gate is never counted as a pass.
+
+on:
+  pull_request: { branches: [main] }
+  push:         { branches: [main] }
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  compile-gate:
+    # The launcher-style build needs the pinned toolchain, disk for the
+    # Horizon check cache and no desktop-session constraints: the
+    # self-hosted horizon runner.
+    runs-on: [self-hosted, horizon]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Pinned revisions
+        id: pins
+        run: |
+          REV=$(python3 -c "import tomllib;print(tomllib.load(open('porter.toml','rb'))['horizon']['revision'])")
+          MIX=$(python3 -c "import tomllib;print(tomllib.load(open('porter.toml','rb'))['horizon']['mixins_revision'])")
+          echo "revision=$REV" >> "$GITHUB_OUTPUT"
+          echo "mixins=$MIX" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the pinned Horizon source archive
+        uses: actions/cache@v4
+        with:
+          path: /tmp/auto-porter-horizon-source
+          key: horizon-source-${{ steps.pins.outputs.revision }}
+
+      - name: Cache the gate's cargo target dir
+        uses: actions/cache@v4
+        with:
+          path: gate-target
+          key: horizon-gate-target-${{ steps.pins.outputs.revision }}-${{ github.sha }}
+          restore-keys: |
+            horizon-gate-target-${{ steps.pins.outputs.revision }}-
+
+      - name: Install horizon-mixins at the pinned revision
+        run: |
+          ROOT=".gate-tools/${{ steps.pins.outputs.mixins }}"
+          if [ ! -x "$ROOT/bin/horizon-mixins" ]; then
+            cargo install --locked --root "$ROOT" \
+              --git https://github.com/horizon-rust/horizon-mixins \
+              --rev "${{ steps.pins.outputs.mixins }}" horizon-mixins-cli
+          fi
+          echo "$ROOT/bin" >> "$GITHUB_PATH"
+
+      - name: Build auto-porter
+        run: cargo build --locked --release -p cli
+
+      - name: Port a fixture hermetically (mock LLM)
+        working-directory: ${{ github.workspace }}
+        run: |
+          GATE=$(mktemp -d)
+          PORT=$((20000 + RANDOM % 20000))
+          cat > "$GATE/response.rs" <<'EOF'
+          use horizon_client::mod_api::*;
+
+          #[derive(Default)]
+          pub struct ChunkcourierTick;
+
+          impl horizon_client::mod_api::Hooks for ChunkcourierTick {
+              /// ported tick hook.
+              fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}
+          }
+          EOF
+          sed -e "s|^# base_url.*|base_url   = \"http://127.0.0.1:$PORT/v1/chat/completions\"|" \
+            porter.toml > "$GATE/porter.toml"
+          python3 scripts/mock_llm_server.py good 0 "$GATE/counter" "$PORT" "$GATE/response.rs" &
+          MOCK=$!
+          sleep 1
+          NVIDIA_API_KEY=mock-key \
+            ./target/release/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
+              --config "$GATE/porter.toml" --output "$GATE/out"
+          RC=$?
+          kill "$MOCK" 2>/dev/null || true
+          test "$RC" -eq 0
+          test -f "$GATE/out/chunkcourier.hnmod"
+          echo "GATE_DIR=$GATE" >> "$GITHUB_ENV"
+
+      - name: Compile gate (launcher-style pipeline)
+        env:
+          AUTO_PORTER_GATE_TARGET: ${{ github.workspace }}/gate-target
+        run: |
+          set -o pipefail
+          ./target/release/auto-porter verify "$GATE_DIR/out" --compile \
+            --config "$GATE_DIR/porter.toml" --verbose 2>&1 | tee gate.log
+          cp "$GATE_DIR/out/chunkcourier-verification.json" .
+          python3 - <<'EOF'
+          import json, os, sys
+          out = os.path.join(os.environ["GATE_DIR"], "out")
+          report = json.load(open(os.path.join(out, "chunkcourier-verification.json")))
+          compile = report["compile"]
+          print("compile:", compile["status"], "-", compile.get("reason", ""))
+          if compile["status"] != "pass":
+              # A skipped gate is not a pass: fail the job either way.
+              sys.exit(f"compile gate did not pass: {compile['status']}")
+          EOF
+
+      - name: Upload the verification report and gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-gate-chunkcourier
+          path: |
+            gate.log
+            chunkcourier-verification.json
+          if-no-files-found: warn

@@ -93,15 +93,51 @@ chain (Modrinth lookups, 26.3 upgrades, resource-pack staging) — a
 `"carrier": "built-in-fallback"` entry in `port-pack-summary.json` marks
 exactly that.
 
-## 3. Compile gate: deferred, never faked
+## 3. Compile gate: implemented — the launcher-style build, executed headlessly
 
-A standalone `cargo check` of a generated mod is not possible
-(`docs/native-mods.md`); the launcher-style build is the only compile gate.
-Without `horizon-ctl` the gate reports `status: "skipped"` with the reason —
-it is never reported as passing. Where the launcher exists, the verification
-layer executes the pinned build path
-(`horizon-mixins apply` → `cargo build --locked --profile release --features
-horizon-client/mods -p horizon-client`).
+A standalone `cargo check` of a generated mod is not possible: the mod
+compiles only inside a Horizon workspace. The gate therefore runs the
+launcher's own pipeline (`launcher/src/native_mods.rs`, verified line-by-line
+against `horizon@6beacfe9`), driven headlessly by `verify::compile`:
+
+1. unpack the `.hnmod`, parse `horizon-native.json` + the mixin manifest,
+2. stage the pristine pinned source (`AUTO_PORTER_HORIZON_SOURCE`, the
+   `[horizon].source_dir` config, or the pinned codeload archive fetched once
+   into a cache dir — the launcher's "once per commit" behaviour; symlinks
+   are dropped the way its staging drops them),
+3. when any bundle carries mixin content (any table beyond
+   `mod`/`compatibility`/`api`/`dependencies` — the launcher's
+   `mixins_content` predicate): strip launcher-only tables and run the real
+   `horizon-mixins apply`; otherwise (the trait-style bundle auto-porter
+   emits) plain-sync, because mixins refuses content-less manifests,
+4. the launcher's `api::stage`: `[api] path` → `native-api/<id>/`, its
+   `horizon-client` dependency rewritten to the staged tree with
+   `default-features = false`, the generated `horizon-native-game`
+   executable package (whose `main` calls `mod_i::hooks()` and
+   `horizon_client::entry::main_with`), workspace members extended,
+5. `cargo fetch --locked` + `cargo metadata --offline` to complete the lock
+   with the staged path packages (the launcher's "Resolving trait mod
+   crates"),
+6. `cargo check --locked --profile fast --no-default-features -p
+   horizon-native-game` — `--features horizon-client/mods` only while the
+   revision still declares it (the pinned one does not), `--no-default-
+   features` being the launcher's headless engine target (no ALSA/libudev).
+   `AUTO_PORTER_GATE_BUILD=1` upgrades the step to a full `cargo build`
+   (proves linking; needs `cc` and either the dev libraries or the headless
+   target).
+
+The verdict is honest by construction: `Pass` only when the pinned package
+type-checks (reason carries the pipeline summary), `Fail` with the compiler
+output tail, `Skipped` naming the missing prerequisite (no source, no cargo,
+no horizon-mixins) — a skipped gate counts as a warning, never as a pass,
+and a failing one fails the verification report. The gate is exercised on
+every push by `.github/workflows/bundle-compile.yml` on the self-hosted
+runner: a mock-LLM port of the fixture jar, compiled against real Horizon.
+Its first swing caught three real emitter bugs the static lint could never
+see (feature modules missing `use horizon_client::mod_api::*;`, template
+skeletons returning `()` where the trait wants `Flow`/`Option`, and
+non-underscored stub parameters dying under `#![deny(warnings)]`) — the
+reason this layer exists.
 
 Related honesty flag: generated bundles carry `#![deny(warnings)]` and pass the
 static API lint (no `unsafe`, only `mod_api`/`Host` imports), but the lint is
@@ -227,12 +263,17 @@ What the pipeline emits now (the trait-style mod path, the launcher's
   `Flow::Cancel` short-circuits; value hooks take the first implementer), and
   the `pub fn hooks() -> Box<dyn mod_api::Hooks>` entry point the launcher's
   generated `main` calls (`mod_i::hooks()`).
-- The LLM contract (v3) additionally requires `#[derive(Default)]` (or
+- The LLM contract (v3.2) additionally requires `#[derive(Default)]` (or
   `impl Default`) on the generated struct — the launcher constructs the mod's
-  hooks with `<Struct>::default()` — enforced by the validator and repaired
-  like any other rejection. Templates render the REAL trait signature from
+  hooks with `<Struct>::default()` — and underscore-prefixed unused
+  parameters (`_host`, matching Horizon's own `mod_api_hooks.rs` test),
+  because the crate builds with `#![deny(warnings)]`; both are enforced by
+  the validator and repaired like any other rejection. Templates render the
+  REAL trait signature from
   `hooks/hook-signatures.json` (`{{HOOK_METHOD_BLOCK}}`; `_`-prefixed
-  parameter names because the skeleton body reads none) and derive `Default`.
+  parameter names because the skeleton body reads none), bodies that satisfy
+  the return type (`Flow::Continue` / `None` / nothing), and derive
+  `Default`.
 - `verify --hnmod` mirrors the launcher's load-time rules: `[mod]` id/version
   present, id charset (`api::valid_id`), the `[api]` path points at a crate in
   the bundle with a `horizon-client` dependency, and `pub fn hooks()` exists.
@@ -241,6 +282,9 @@ Honest fallbacks, not fabrications: a hook without an extracted signature
 (2 of 386, render-crate) renders no method at all — the trait's default no-op
 keeps the crate buildable and the hook is reported as unwired; the bundle
 assembler returns the same warnings into the report. What remains deferred is
-unchanged: actually compiling and loading the bundle needs the launcher on the
-self-hosted runner (spec §5.2; see §3), and `trait_method` injections for
-non-catalog targets are not generated.
+the last mile of §5.2: booting the game with the bundle installed and
+watching the hooks dispatch in-game (`horizon-ctl` + Agent Control on the
+self-hosted runner). Compiling the bundle is no longer deferred — the
+launcher-style build runs headlessly in `porter verify --compile` (§3) and in
+ci (bundle-compile.yml). `trait_method` injections for non-catalog targets
+are still not generated.

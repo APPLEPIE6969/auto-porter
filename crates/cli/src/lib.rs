@@ -1278,18 +1278,22 @@ fn verify_group(
     let hooks_status = status_of(&issues, &["hook_", "api_version_mismatch", "source_lint"]);
     let deps_status = status_of(&issues, &["dep_"]);
 
-    // ---- compile layer: the only real gate is the launcher-style build
-    // (spec §5.2.4), which the horizon-ctl verification layer executes.
-    let compile = CompileResult {
-        status: CheckStatus::Skipped,
-        reason: Some(
-            if do_compile {
-                "the compile gate runs in the launcher-style build via the horizon-ctl verification layer (--in-game on a runner with horizon-ctl)"
-            } else {
-                "--compile not requested"
-            }
-            .to_string(),
-        ),
+    // ---- compile layer: the launcher-style build, executed headlessly
+    // (spec §5.2.4, docs/limitations.md §3). Skipped with the missing
+    // prerequisite named when the gate cannot run; never pretended.
+    let compile = if do_compile {
+        match hnmod_path {
+            Some(ref bundle) => verify::compile::run_bundle(bundle, cfg, verbose),
+            None => CompileResult {
+                status: CheckStatus::Skipped,
+                reason: Some("no .hnmod in this artifact group; nothing to compile".to_string()),
+            },
+        }
+    } else {
+        CompileResult {
+            status: CheckStatus::Skipped,
+            reason: Some("--compile not requested".to_string()),
+        }
     };
 
     // ---- parity / in-game layers
@@ -1328,7 +1332,8 @@ fn verify_group(
     // ---- overall
     let any_fail = issues.iter().any(|i| i.severity == CheckStatus::Fail)
         || parity.status == CheckStatus::Fail
-        || in_game.status == CheckStatus::Fail;
+        || in_game.status == CheckStatus::Fail
+        || compile.status == CheckStatus::Fail;
     let any_warn = issues.iter().any(|i| i.severity == CheckStatus::Warn)
         || parity.status == CheckStatus::Skipped
         || in_game.status == CheckStatus::Skipped
@@ -1349,7 +1354,10 @@ fn verify_group(
         human_review.push("in-game smoke skipped in this environment".to_string());
     }
     if compile.status == CheckStatus::Skipped {
-        human_review.push("launcher-style compile gate deferred".to_string());
+        human_review.push(format!(
+            "compile gate skipped: {}",
+            compile.reason.as_deref().unwrap_or("no reason given")
+        ));
     }
 
     let verification = VerificationReport {
