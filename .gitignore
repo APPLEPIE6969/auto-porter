@@ -10,3 +10,4 @@ tests/modpack/output/
 native/
 *.hnmod
 *.hmod
+__pycache__/

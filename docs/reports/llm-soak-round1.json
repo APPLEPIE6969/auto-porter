@@ -1,0 +1,30 @@
+{
+ "calls": 132,
+ "outcomes": {
+  "code": 100,
+  "failed": 25,
+  "timeout": 7
+ },
+ "shapes": {
+  "sentinel": 95,
+  "clean": 5,
+  "empty": 32
+ },
+ "finish": {
+  "stop": 100
+ },
+ "signature": {
+  "missing_fn": 95,
+  "wrong_shape": 5
+ },
+ "api_issues": {},
+ "errors": {
+  "LLM returned an error status; body: {\"status\":429,\"title\":\"Too Many Requests\"}": 25,
+  "LLM call exceeded 180s": 7
+ },
+ "runs": 5,
+ "first_try_ok": 0,
+ "retried": 5,
+ "latency_p50": 33025,
+ "latency_p90": 115741
+}

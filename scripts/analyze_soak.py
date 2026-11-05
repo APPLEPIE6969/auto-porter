@@ -166,17 +166,34 @@ def main() -> int:
     errors = collections.Counter()
     lat = []
     calls = []
-    runs = collections.Counter()  # prompt-key -> attempt count
+    # Per-run call lists: one entry per trace file. Meaningful for per-run
+    # layouts (round 2+); for per-shard traces each file aggregates many runs,
+    # so first-try/retry stats only make sense when each file holds one run.
+    per_file_calls = []
 
-    for line in open(args.trace):
-        line = line.strip()
-        if not line:
-            continue
+    for tf in traces:
+        run_calls = []
         try:
-            v = json.loads(line)
-        except Exception:
+            fh = open(tf)
+        except OSError as e:
+            print(f"skipping unreadable trace {tf}: {e}")
             continue
-        calls.append(v)
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    v = json.loads(line)
+                except Exception:
+                    continue
+                run_calls.append(v)
+        if not run_calls:
+            continue
+        per_file_calls.append(run_calls)
+        calls.extend(run_calls)
+
+    for v in calls:
         outcomes[v.get("outcome")] += 1
         lat.append(v.get("latency_ms") or 0)
         fr = v.get("finish_reason")
@@ -202,18 +219,7 @@ def main() -> int:
     repaired = 0
     first_try = 0
     run_count = 0
-    for tf in traces:
-        run_calls = []
-        for line in open(tf):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                run_calls.append(json.loads(line))
-            except Exception:
-                continue
-        if not run_calls:
-            continue
+    for run_calls in per_file_calls:
         run_count += 1
         ok_first = (
             len(run_calls) == 1
