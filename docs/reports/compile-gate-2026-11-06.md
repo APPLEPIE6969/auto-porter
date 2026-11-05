@@ -95,3 +95,12 @@ tool, cargo target) plus a free-disk-space step for the multi-GB Horizon
 check cache. The game-client jobs in port-test.yml (parity / in-game /
 modpack sweep) keep their `HORIZON_SELFHOSTED` guard: they genuinely
 need a licensed MC copy and stay skipped.
+
+First hosted run (commit `699f90e`, run 42113058855): job green in
+9.3 min cold — pinned-archive fetch, mixins built from source, hermetic
+mock-LLM port, then the real `cargo check` of `horizon-native-game` +
+`horizon-mod-chunkcourier` against horizon@6beacfe9 (`Finished fast
+profile [optimized] target(s) in 2m 19s`), report verdict
+`compile: pass` ("launcher-style pipeline on horizon@6beacfe9 (API-only,
+plain stage: horizon-native-game, cargo check)"). The two stuck
+self-hosted runs from before the move were cancelled.
