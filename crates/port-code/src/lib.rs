@@ -602,6 +602,13 @@ fn contract_notes_text(s: &HookSignature) -> String {
         out.push_str(
             "Return `Flow::Continue` normally; return `Flow::Cancel` to veto the game's default action and skip later mods.\n",
         );
+    } else {
+        // Soak round 3: with a no-return hook the model sometimes added
+        // `-> Flow` on its own (over-generalizing the cancellable few-shot)
+        // and got rejected. State the inverse rule explicitly.
+        out.push_str(
+            "This signature has NO return type: the method returns nothing — never add `-> Flow` or any other return type (only hooks whose contract signature itself shows `-> Flow` return it).\n",
+        );
     }
     out
 }
