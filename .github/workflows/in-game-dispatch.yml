@@ -212,7 +212,8 @@ jobs:
       - name: Boot the game headless (Xvfb, --offscreen, no session)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb libegl1 libgl1 libglx-mesa0 mesa-vulkan-drivers
+          sudo apt-get install -y -qq xvfb libegl1 libgl1 libglx-mesa0 mesa-vulkan-drivers \
+            libxkbcommon-x11-0 libxkbcommon0
           Xvfb :99 -screen 0 1280x720x24 &
           export DISPLAY=:99
           CTL="$PWD/gate-target/fast/horizon-ctl"
