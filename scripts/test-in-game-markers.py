@@ -2,6 +2,7 @@
 """Local validation for scripts/in_game_markers.py (zip-scan + hard-fail)."""
 
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -9,6 +10,7 @@ from pathlib import Path
 
 TMP = Path("/tmp/marker-test")
 SCRIPT = Path("/home/z/my-project/auto-porter/scripts/in_game_markers.py")
+shutil.rmtree(TMP, ignore_errors=True)
 
 BROADCAST_BODY = """
 pub struct Mod;
@@ -75,5 +77,63 @@ assert code == 2, f"zero-scan must exit 2, got {code}"
 assert "nothing was scanned" in stderr, stderr
 assert not (out3 / "j.json").exists(), "no json must be written on failure"
 print("PASS zero-scan (hard fail)\n")
+
+# Case 4: the wrapper's cfg(test) SmokeHost double — its `fn broadcast(` /
+# `fn tell(` DEFINITIONS and the smoke's "unknown panic" fallback must not
+# be mis-attributed to the body (the real leg's first honest scan showed
+# exactly this false positive).
+WRAPPER_LIB_RS = '''
+#![deny(warnings)]
+use horizon_client::mod_api::*;
+
+pub struct PortedHooks { body: body::ChunkCourier }
+impl horizon_client::mod_api::Hooks for PortedHooks {
+    fn player_tick(&self, host: &mut dyn Host, event: &mut PlayerTickEvent) {
+        self.body.player_tick(host, event)
+    }
+}
+
+#[cfg(test)]
+mod dispatch_smoke {
+    use super::*;
+    struct SmokeHost;
+    impl horizon_client::mod_api::Host for SmokeHost {
+        fn broadcast(&self, _line: horizon_client::mod_api::Text) {}
+        fn tell(&mut self, _uuid: u128, _line: horizon_client::mod_api::Text) -> bool {
+            false
+        }
+    }
+    #[test]
+    fn player_tick_dispatches() {
+        let mods: Vec<Box<dyn horizon_client::mod_api::Hooks>> = vec![hooks()];
+        let dispatch = std::panic::AssertUnwindSafe(|| {
+            let mut host = SmokeHost;
+            horizon_client::mod_api::dispatch_player_tick(&mut host, &mods);
+        });
+        if let Err(panic) = std::panic::catch_unwind(dispatch) {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&'static str>().copied())
+                .unwrap_or("unknown panic");
+            assert!(message.contains("Host::"), "delegation panicked: {message}");
+        }
+    }
+}
+'''
+out4 = TMP / "wrapper-double"; out4.mkdir(parents=True)
+with zipfile.ZipFile(out4 / "chunkcourier.hnmod", "w") as z:
+    z.writestr("horizon-native.json", "{}")
+    z.writestr("mixins/chunkcourier/engine/src/lib.rs", WRAPPER_LIB_RS)
+    z.writestr("mixins/chunkcourier/engine/src/body.rs", BROADCAST_BODY)
+code, stdout, _ = run(out4, "wrapper-double")
+j = json.loads((out4 / "j.json").read_text())
+assert code == 0, "wrapper-double must succeed"
+assert j["files_scanned"] == 2, j
+assert j["broadcast_calls"] == 1, f"only the body's broadcast is a call site: {j}"
+assert j["tell_calls"] == 0, f"the double's fn tell must not count: {j}"
+assert j["broadcast_markers"] == ["[chunkcourier] player_tick dispatched (in-game tick #"], j
+assert "unknown panic" not in j["tell_literals"] + j["broadcast_markers"], j
+print("PASS wrapper-double (definitions excluded)\n")
 
 print("ALL MARKER-EXTRACTOR CASES PASS")

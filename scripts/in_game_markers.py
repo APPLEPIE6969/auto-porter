@@ -36,7 +36,13 @@ import sys
 import zipfile
 from pathlib import Path
 
-CALL_RE = re.compile(r"\b(?:broadcast|tell)\s*\(")
+CALL_RE = re.compile(r"(?<!fn )\b(?:broadcast|tell)\s*\(")
+# `(?<!fn )` skips the SmokeHost double's METHOD DEFINITIONS in the wrapper's
+# cfg(test) smoke module ("fn broadcast(&self, ...)", "fn tell(&mut self,
+# ...)") — otherwise the double's next literal (the smoke's "unknown panic"
+# fallback) is mis-attributed to the body as a broadcast/tell message. Only
+# call sites (host.broadcast(...), host.tell(...)) are the body's
+# observables.
 # A Rust string literal: no bare newlines, `\"` escapes; good enough for the
 # emitted hook bodies the pipeline produces.
 LITERAL_RE = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
