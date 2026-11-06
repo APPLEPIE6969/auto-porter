@@ -102,3 +102,37 @@ tell-only, zero-scan hard fail, wrapper-double.
   running; results land in a separate round report.
 - Standing item: the PAT that made this session possible is pasted in chat
   history — rotate it once the session's push needs are done.
+
+## Addendum (same day): the [CHAT] discovery, the gate catching v3.3's gap, v3.4's first boot
+
+**The pin-facts got refined — tell is log-observable in a booted game.** The
+next real leg (run 42252868531) failed at the compile gate with E0277: its
+accepted body held `ticks: std::cell::Cell<u32>` — `Send` but not `Sync`,
+and the `Hooks` trait requires the impl to be `Sync`. The gate did exactly
+its job. The following real leg (on contract v3.4, run of `c94c811`) flipped
+the state type to `std::sync::atomic::AtomicU32` on the first try — the
+contract change worked immediately — and booted green. That body was
+tell-only, and its messages turned up in the booted log anyway, as
+`[Render thread/INFO]: [CHAT] chunkcourier: parcels ticked N` (30 lines):
+**the pinned client logs every delivered chat line as `[CHAT] <line>` at
+INFO** (`horizon-client-render/src/chat.rs:369`, documented as "vanilla logs
+them"), into the same `logs/latest.log`. So the two channels are
+distinguishable and both observable: `broadcast` → `[Server thread/INFO]:
+<line>`, `tell` → `[Render thread/INFO]: [CHAT] <line>`. The earlier
+"tell is HUD-only, nothing lands in the log" reading (and the contract's
+absolute phrasing about the server's log section) is superseded for the
+booted-game evidence pipeline; the contract's steer itself (broadcast for
+periodic announcements) is unchanged and still correct.
+
+The marker extractor and the workflow assert were upgraded accordingly
+(markers.txt now carries broadcast prefixes plus `[CHAT] `-prefixed tell
+prefixes; the assert counts both against the same log; the "tell-only"
+narrative tier survives only for a body with no message calls at all).
+Retro-check: the extractor fed the actual v3.4 body produces exactly
+`[CHAT] chunkcourier: parcels ticked`, and the actual boot log carries 30
+matches — the upgraded assert asserts that for real.
+
+Soak round 7 (100 runs, v3.3) completed 100/100 ported, 71 first-try, with
+the round's actionable finding quantified: 26/100 bundles held `Cell<...>`
+state — every one an E0277 at the gate (see `llm-soak-round7.md`). Contract
+v3.4 teaches the atomics idiom; round 8 is running against it.

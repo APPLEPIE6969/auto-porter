@@ -9,16 +9,20 @@ evidence channel is the mod's own Host calls:
   server's log (`log::info!` in native_server.rs), so the literal a broadcast
   carries is greppable in `logs/latest.log`. These are the log-observable
   markers.
-- `host.tell(uuid, ...)` — one player's chat HUD only; nothing lands in the
-  log. Reported as HUD-only (evidence stays with the compile gate's dispatch
-  smoke and the state-poll assertions).
+- `host.tell(uuid, ...)` — one player's chat. The SERVER-side log section
+  never carries it, but the receiving CLIENT logs every delivered chat line
+  as `[CHAT] <line>` at INFO (horizon-client-render/src/chat.rs:369 —
+  "vanilla logs them"), into the same booted-game `logs/latest.log`. In a
+  single-player boot the local player receives the tell, so a tell marker is
+  greppable with the `[CHAT] ` prefix. Tell markers are emitted that way.
 
 This script scans the port output's emitted Rust sources for those calls and
-writes the greppable prefixes (format strings cut at the first `{`) to
-`--markers` (one per line) and a JSON summary to `--json`. The emitted code
-lives inside the `.hnmod` bundle (a zip: `horizon-native.json` +
-`mixins/<id>/...`), so the scan covers `.rs` members of every `*.hnmod` in
-the output dir as well as any loose `*.rs` files.
+writes greppable prefixes to `--markers` (one per line: broadcast literals
+cut at the first `{`, tell literals prefixed with `[CHAT] `) and a JSON
+summary to `--json`. The emitted code lives inside the `.hnmod` bundle (a
+zip: `horizon-native.json` + `mixins/<id>/...`), so the scan covers `.rs`
+members of every `*.hnmod` in the output dir as well as any loose `*.rs`
+files.
 
 Honesty contract: an empty marker set is honest ONLY after a real scan (a
 genuinely tell-only body); a zero-source scan is an extraction error, not
@@ -130,36 +134,48 @@ def main() -> int:
         prefix = stable_prefix(lit)
         if prefix and prefix not in markers:
             markers.append(prefix)
+    # Tell literals are log-observable through the receiving client's chat
+    # log (`[CHAT] <line>`, chat.rs:369); emit them with that prefix so the
+    # caller can grep both channels from one marker file.
+    chat_markers = []
+    for lit in tell:
+        prefix = stable_prefix(lit)
+        if prefix:
+            line = f"[CHAT] {prefix}"
+            if line not in chat_markers:
+                chat_markers.append(line)
 
     summary = {
         "files_scanned": len(sources),
         "broadcast_calls": len(broadcast),
         "tell_calls": len(tell),
-        "log_observable": bool(markers),
+        "log_observable": bool(markers or chat_markers),
         "broadcast_markers": markers,
         "tell_literals": [stable_prefix(t) for t in tell],
+        "chat_markers": chat_markers,
     }
     if args.as_json:
         args.as_json.parent.mkdir(parents=True, exist_ok=True)
         args.as_json.write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
     if args.markers:
         args.markers.parent.mkdir(parents=True, exist_ok=True)
-        args.markers.write_text("".join(m + "\n" for m in markers), encoding="utf-8")
+        args.markers.write_text("".join(m + "\n" for m in markers + chat_markers), encoding="utf-8")
 
     print(
         f"scanned {len(sources)} emitted Rust source(s): "
         f"{len(broadcast)} broadcast call(s), {len(tell)} tell call(s); "
-        f"log-observable markers: {len(markers)}"
+        f"log-observable markers: {len(markers) + len(chat_markers)}"
     )
     for m in markers:
         print(f"  broadcast marker: {m!r}")
     for t in summary["tell_literals"]:
-        print(f"  tell (HUD-only) literal: {t!r}")
+        print(f"  tell literal (greppable as '[CHAT] {t}'): {t!r}")
     if not markers and tell:
         print(
-            "the real port's messages are tell-only (player chat HUD, not the "
-            "server's log): dispatch evidence stays with the compile gate's "
-            "dispatch smoke and the state-poll assertions"
+            "the real port's messages are tell-only: the server's log section "
+            "does not carry them, but the booted client logs every delivered "
+            "chat line as '[CHAT] <line>' (chat.rs:369), so the chat markers "
+            "above are asserted against the same booted-game log"
         )
     return 0
 

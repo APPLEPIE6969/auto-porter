@@ -16,12 +16,15 @@ name: In-Game Dispatch
 #   calls the Host, so a live dispatch is observable from outside. The job
 #   fails unless the broadcast markers appear in the server's log.
 # - `real`: the port is produced by the real NVIDIA NIM generation (the
-#   production path). The body is whatever the model wrote; the observable is
-#   extracted from the emitted code (`scripts/in_game_markers.py`): broadcast
-#   literals are log-observable and must appear in the server's log; a body
-#   that only `tell`s is player-chat-private (nothing lands in the log) and
-#   the job says so, relying on the compile gate's dispatch smoke and the
-#   state-poll assertions for the dispatch half of the evidence.
+#   production path). The body is whatever the model wrote; the observables
+#   are extracted from the emitted code (`scripts/in_game_markers.py`):
+#   broadcast literals land in the server's log section
+#   (`[Server thread/INFO]: <line>`) and tell literals surface through the
+#   receiving client's chat log (`[Render thread/INFO]: [CHAT] <line>`,
+#   chat.rs:369 — "vanilla logs them") — both greppable in the same booted
+#   `logs/latest.log`, and both asserted. A body with no message calls at
+#   all falls back to the compile gate's dispatch smoke and the state-poll
+#   assertions, stated as such.
 #
 # Both legs assert the game kept simulating: two `horizon-ctl state` polls
 # ~20s apart must show the client tick counter advancing (the real tick loop
@@ -354,7 +357,7 @@ jobs:
           assert delta >= 300, f"the tick loop stalled: only {delta} ticks in 20s"
           print("the game kept simulating with the ported mod live")
           PY
-          echo "--- dispatch markers in the server log ---"
+          echo "--- dispatch markers in the booted game's log ---"
           if [ "${{ matrix.seed }}" = "mock" ]; then
             grep 'player_tick dispatched' "$LOG" | head -8 || true
             MATCHES=$(grep -c 'player_tick dispatched' "$LOG" || true)
@@ -365,12 +368,14 @@ jobs:
               exit 1
             }
           else
-            # The real port's body is whatever the model wrote. Broadcast
-            # markers are log-observable and must appear; a tell-only body is
-            # player-chat-private, and its dispatch evidence is the compile
-            # gate's dispatch smoke plus the state-poll assertions above.
+            # The real port's body is whatever the model wrote. The marker
+            # file carries every observable: broadcast literals as-is (the
+            # server's log section) and tell literals prefixed '[CHAT] '
+            # (the receiving client's chat log, chat.rs:369). Both channels
+            # land in this same latest.log, so one count covers both; a body
+            # with no message calls at all is the only narrative case.
             if [ -s markers.txt ]; then
-              echo "expected broadcast markers (from the emitted code):"
+              echo "expected markers (from the emitted code):"
               cat markers.txt
               MATCHES=0
               while IFS= read -r marker; do
@@ -381,17 +386,16 @@ jobs:
               done < markers.txt
               echo "dispatch markers: $MATCHES"
               [ "$MATCHES" -ge 3 ] || {
-                echo "the emitted broadcast markers never appeared in the server's log"
+                echo "the emitted markers never appeared in the booted game's log"
                 tail -40 "$LOG"
                 exit 1
               }
             else
-              echo "the real port's body carries no broadcast: its messages are"
-              echo "tell-only (player chat HUD, which the server's log does not"
-              echo "carry). The dispatch half of the evidence stays with the"
-              echo "compile gate's dispatch smoke (same emitted code, the pinned"
-              echo "build's real dispatch machinery) and the state-poll ticks"
-              echo "asserted above; the log cannot show this body's effect."
+              echo "the real port's body carries no message calls at all —"
+              echo "nothing of it is observable in the log. The dispatch half of"
+              echo "the evidence stays with the compile gate's dispatch smoke"
+              echo "(same emitted code, the pinned build's real dispatch"
+              echo "machinery) and the state-poll ticks asserted above."
             fi
           fi
 

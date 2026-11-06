@@ -58,15 +58,26 @@ assert code == 0, "broadcast-in-hnmod must succeed"
 assert j["files_scanned"] == 1 and j["broadcast_calls"] == 1 and j["tell_calls"] == 1, j
 assert j["broadcast_markers"] == ["[chunkcourier] player_tick dispatched (in-game tick #"], j
 assert j["tell_literals"] == ["chunkcourier: parcels ticked"], j
-assert (out1 / "m.txt").read_text().strip().startswith("[chunkcourier] player_tick dispatched"), "markers.txt"
+assert j["chat_markers"] == ["[CHAT] chunkcourier: parcels ticked"], j
+assert j["log_observable"] is True, j
+lines = (out1 / "m.txt").read_text().splitlines()
+assert lines == [
+    "[chunkcourier] player_tick dispatched (in-game tick #",
+    "[CHAT] chunkcourier: parcels ticked",
+], lines
 print("PASS broadcast-in-hnmod\n")
 
-# Case 2: tell-only body — honest empty markers, scanned > 0.
+# Case 2: tell-only body — its messages are still log-observable through the
+# receiving client's [CHAT] chat log (chat.rs:369), so the marker file pins
+# them with that prefix and log_observable stays True.
 out2 = TMP / "tellonly"; out2.mkdir(parents=True)
 make_hnmod(out2 / "chunkcourier.hnmod", TELL_ONLY_BODY)
 code, stdout, _ = run(out2, "tell-only")
 j = json.loads((out2 / "j.json").read_text())
-assert code == 0 and j["files_scanned"] == 1 and j["log_observable"] is False and j["broadcast_markers"] == [], j
+assert code == 0 and j["files_scanned"] == 1, j
+assert j["log_observable"] is True and j["broadcast_markers"] == [], j
+assert j["chat_markers"] == ["[CHAT] chunkcourier: parcels ticked"], j
+assert (out2 / "m.txt").read_text().splitlines() == ["[CHAT] chunkcourier: parcels ticked"]
 assert "tell-only" in stdout, stdout
 print("PASS tell-only\n")
 
@@ -136,7 +147,8 @@ assert j["broadcast_calls"] == 1, f"only the body's broadcast is a call site: {j
 assert j["tell_calls"] == 1, f"exactly the body's tell, the double's fn tell excluded: {j}"
 assert j["broadcast_markers"] == ["[chunkcourier] player_tick dispatched (in-game tick #"], j
 assert j["tell_literals"] == ["chunkcourier: parcels ticked"], j
-assert "unknown panic" not in j["tell_literals"] + j["broadcast_markers"], (
+assert j["chat_markers"] == ["[CHAT] chunkcourier: parcels ticked"], j
+assert "unknown panic" not in j["tell_literals"] + j["broadcast_markers"] + j["chat_markers"], (
     "the smoke double's panic fallback must not appear as a marker")
 print("PASS wrapper-double (definitions excluded)\n")
 
