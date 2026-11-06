@@ -197,7 +197,7 @@ jobs:
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             case "$line" in
-              *"horizon-prepare packs"|"horizon-prepare panorama"|"horizon-prepare fonts"|"horizon-prepare languages"|"horizon-prepare sounds") ;;
+              *"horizon-prepare packs"|*"horizon-prepare panorama"|*"horizon-prepare fonts"|*"horizon-prepare languages"|*"horizon-prepare sounds") ;;
               *) echo "unexpected resource gap: $line"; exit 1 ;;
             esac
           done < check.txt
