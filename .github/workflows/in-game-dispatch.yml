@@ -207,8 +207,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/gate-target
         # horizon-ctl is the bin target of the horizon-client-lib package.
-        run: cargo build --locked --profile fast --no-default-features \
-          -p horizon-client-lib --bin horizon-ctl
+        run: cargo build --locked --profile fast --no-default-features -p horizon-client-lib --bin horizon-ctl
 
       - name: Boot the game headless (Xvfb, --offscreen, no session)
         run: |
