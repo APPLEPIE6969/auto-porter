@@ -1,0 +1,30 @@
+{
+ "round": 8,
+ "contract": "v3.4",
+ "model": "minimaxai/minimax-m3.1-flash",
+ "runs": 100,
+ "ported": 100,
+ "first_try": 67,
+ "llm_calls_total": 164,
+ "failed_entries": {
+  "HTTP 429": 62,
+  "LLM call exceeded 180s": 1
+ },
+ "accepted_latency_ms": {
+  "min": 28736,
+  "p50": 70480,
+  "p90": 108784,
+  "max": 156775
+ },
+ "finish_reasons": {
+  "stop": 100
+ },
+ "channel_usage": {
+  "broadcast_sites": 65,
+  "tell_sites": 35
+ },
+ "acting_player_guards": 94,
+ "sync_risk_bundles": 0,
+ "sync_risk_runs": [],
+ "note": "v3.4 (Send+Sync state requirement) validated: Sync-risk bundles 26 -> 0 at a held 100/100 ported rate"
+}
