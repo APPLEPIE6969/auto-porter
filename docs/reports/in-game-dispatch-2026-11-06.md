@@ -92,3 +92,16 @@ session the game can't read is reported on stderr; the game still starts"
   with the markers, `state.json`, `ready.json`, `launch.json`, `check.txt`,
   `prepare.jsonl`, `chunkcourier-verification.json`).
 - CI artifact `in-game-dispatch-evidence` on run 42222447944.
+
+## Addendum: the Actions minutes wall
+
+The run of record above is green (as is Bundle Compile on the same commit).
+Minutes later, the docs-only push that added this report shows every
+workflow failing in ~3 seconds with **zero steps started** — the signature
+of the repository's GitHub Actions usage limit (this month burned the free
+tier: soak round 6 alone was 100 jobs, plus seven ~35-minute in-game runs
+and several 12-minute cold gate builds). Nothing about the code changed;
+on a fresh allowance (or a raised spending limit) the workflows run again.
+Port Test on the green commit likewise lost only its final `report`
+aggregation job to the wall — every real test job in it had already
+passed.
