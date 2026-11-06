@@ -1,0 +1,255 @@
+name: In-Game Dispatch
+
+# §5.2's last mile: boot the staged `horizon-native-game` — the real game with
+# the ported mod wired in — on a GitHub-hosted runner, and watch the game's
+# own tick loop dispatch the mod's `player_tick` hook. No Minecraft account
+# anywhere: the game starts with no session ("the game still starts" —
+# Horizon's launch guide §6), headless (`--offscreen` under Xvfb, the
+# launcher's no-ALSA engine target), and the resources `horizon-prepare`
+# needs come from Mojang's public distribution endpoints — the same files a
+# signed-in launcher would hand it, each verified against research-lock.json's
+# sha1 pins by `scripts/fetch_mojang_inputs.py` and again by the preparer.
+#
+# Dispatch evidence: the ported hook calls `Host::broadcast` ("a system line
+# in every player's chat and the server's log"), so the booted game's
+# `logs/latest.log` carries a marker line per dispatch. The job fails unless
+# the markers appear — a mod that never gets called cannot fake them.
+#
+# Honesty rules (same as the compile gate): every step runs for real; a
+# failure anywhere fails the job; no step is allowed to pass vacuously.
+
+on:
+  pull_request: { branches: [main] }
+  push:         { branches: [main] }
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  in-game-dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (the Horizon build cache is multi-GB)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Pinned revisions
+        id: pins
+        run: |
+          REV=$(python3 -c "import tomllib;print(tomllib.load(open('porter.toml','rb'))['horizon']['revision'])")
+          MIX=$(python3 -c "import tomllib;print(tomllib.load(open('porter.toml','rb'))['horizon']['mixins_revision'])")
+          echo "revision=$REV" >> "$GITHUB_OUTPUT"
+          echo "mixins=$MIX" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the pinned Horizon source archive
+        uses: actions/cache@v4
+        with:
+          path: /tmp/auto-porter-horizon-source
+          key: horizon-source-${{ steps.pins.outputs.revision }}
+
+      - name: Cache the game's cargo target dir (shared with Bundle Compile)
+        uses: actions/cache@v4
+        with:
+          path: gate-target
+          key: horizon-gate-target-${{ steps.pins.outputs.revision }}-${{ github.sha }}
+          restore-keys: |
+            horizon-gate-target-${{ steps.pins.outputs.revision }}-
+
+      - name: Cache horizon-mixins (built from source)
+        uses: actions/cache@v4
+        with:
+          path: .gate-tools
+          key: horizon-mixins-${{ steps.pins.outputs.mixins }}
+
+      - name: Install horizon-mixins at the pinned revision
+        run: |
+          ROOT=".gate-tools/${{ steps.pins.outputs.mixins }}"
+          if [ ! -x "$ROOT/bin/horizon-mixins" ]; then
+            cargo install --locked --root "$ROOT" \
+              --git https://github.com/horizon-rust/horizon-mixins \
+              --rev "${{ steps.pins.outputs.mixins }}" horizon-mixins-cli
+          fi
+          echo "$ROOT/bin" >> "$GITHUB_PATH"
+
+      - name: Build auto-porter
+        run: cargo build --locked --release -p cli
+
+      - name: Port the fixture hermetically (mock LLM, dispatch-marker body)
+        working-directory: ${{ github.workspace }}
+        run: |
+          GATE=$(mktemp -d)
+          PORT=$((20000 + RANDOM % 20000))
+          # A real implementation, as the LLM writes for this fixture: the
+          # body uses the Host, so a live dispatch is observable from outside.
+          cat > "$GATE/response.rs" <<'EOF'
+          use horizon_client::mod_api::*;
+          use std::sync::atomic::{AtomicU32, Ordering};
+
+          #[derive(Default)]
+          pub struct ChunkcourierTick;
+
+          impl horizon_client::mod_api::Hooks for ChunkcourierTick {
+              /// ported tick hook: announces its own dispatch on the Host.
+              fn player_tick(&self, host: &mut dyn Host, _event: &mut PlayerTickEvent) {
+                  static TICKS: AtomicU32 = AtomicU32::new(0);
+                  let tick = TICKS.fetch_add(1, Ordering::Relaxed);
+                  if tick % 100 == 0 {
+                      host.broadcast(format!(
+                          "[chunkcourier] player_tick dispatched (in-game tick #{tick})"
+                      ).into());
+                  }
+              }
+          }
+          EOF
+          sed -e "s|^# base_url.*|base_url   = \"http://127.0.0.1:$PORT/v1/chat/completions\"|" \
+            porter.toml > "$GATE/porter.toml"
+          python3 scripts/mock_llm_server.py good 0 "$GATE/counter" "$PORT" "$GATE/response.rs" &
+          MOCK=$!
+          sleep 1
+          NVIDIA_API_KEY=mock-key \
+            ./target/release/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
+              --config "$GATE/porter.toml" --output "$GATE/out"
+          RC=$?
+          kill "$MOCK" 2>/dev/null || true
+          test "$RC" -eq 0
+          test -f "$GATE/out/chunkcourier.hnmod"
+          echo "GATE_DIR=$GATE" >> "$GITHUB_ENV"
+
+      - name: Stage and build the game (launcher-style pipeline, keep the tree)
+        env:
+          AUTO_PORTER_GATE_BUILD: "1"
+          AUTO_PORTER_GATE_WORK: ${{ github.workspace }}/gate-work
+          AUTO_PORTER_GATE_KEEP: "1"
+          AUTO_PORTER_GATE_TARGET: ${{ github.workspace }}/gate-target
+        run: |
+          set -o pipefail
+          ./target/release/auto-porter verify "$GATE_DIR/out" --compile \
+            --config "$GATE_DIR/porter.toml" --verbose 2>&1 | tee gate.log
+          cp "$GATE_DIR/out/chunkcourier-verification.json" .
+          python3 - <<'EOF'
+          import json, os, sys
+          out = os.path.join(os.environ["GATE_DIR"], "out")
+          compile = json.load(open(os.path.join(out, "chunkcourier-verification.json")))["compile"]
+          print("compile:", compile["status"], "-", compile.get("reason", ""))
+          if compile["status"] != "pass":
+              sys.exit(f"compile gate did not pass: {compile['status']}")
+          EOF
+          test -x gate-target/fast/horizon-native-game
+
+      - name: A JDK for the preparer's exporters (the pin wants Java 25)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Fetch the pinned Minecraft files from Mojang's public endpoints
+        run: |
+          LOCK="/tmp/auto-porter-horizon-source/${{ steps.pins.outputs.revision }}/research-lock.json"
+          python3 scripts/fetch_mojang_inputs.py --lock "$LOCK" --out /tmp/mojang --jobs 12
+          du -sh /tmp/mojang
+
+      - name: Build horizon-prepare at the pin (its own target dir)
+        working-directory: ${{ github.workspace }}/gate-work
+        run: |
+          cp -a "/tmp/auto-porter-horizon-source/${{ steps.pins.outputs.revision }}/horizon" .
+          cd horizon
+          cargo build --locked --release -p horizon-prepare \
+            --target-dir "$RUNNER_TEMP/horizon-prep-target"
+
+      - name: Prepare the resources offline (no account, no launcher)
+        run: |
+          PREP="$RUNNER_TEMP/horizon-prep-target/release/horizon-prepare"
+          ROOT="$PWD/gate-work/horizon"
+          "$PREP" --prepare --root "$ROOT" \
+            --version-json /tmp/mojang/version.json \
+            --client-jar /tmp/mojang/client.jar \
+            --libraries-dir /tmp/mojang/libraries \
+            --server-jar /tmp/mojang/server.jar \
+            --output "$PWD/resources" --progress json 2>prepare.stderr | tee prepare.jsonl
+          tail -5 prepare.stderr || true
+
+      - name: Check the prepared resources (only the optional extras may lack)
+        run: |
+          PREP="$RUNNER_TEMP/horizon-prep-target/release/horizon-prepare"
+          ROOT="$PWD/gate-work/horizon"
+          set +e
+          "$PREP" --check --root "$ROOT" --output "$PWD/resources" > check.txt
+          RC=$?
+          set -e
+          cat check.txt
+          [ "$RC" -le 1 ] || exit 1
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in
+              *"horizon-prepare packs"|"horizon-prepare panorama"|"horizon-prepare fonts"|"horizon-prepare languages"|"horizon-prepare sounds") ;;
+              *) echo "unexpected resource gap: $line"; exit 1 ;;
+            esac
+          done < check.txt
+
+      - name: Build horizon-ctl in the staged tree
+        working-directory: ${{ github.workspace }}/gate-work/stage
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/gate-target
+        run: cargo build --locked --profile fast --no-default-features -p horizon-ctl
+
+      - name: Boot the game headless (Xvfb, --offscreen, no session)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libegl1 libgl1 libglx-mesa0 mesa-vulkan-drivers
+          Xvfb :99 -screen 0 1280x720x24 &
+          export DISPLAY=:99
+          CTL="$PWD/gate-target/fast/horizon-ctl"
+          GAME="$PWD/gate-target/fast/horizon-native-game"
+          mkdir -p instance
+          "$CTL" --socket "$PWD/game.sock" launch --game "$GAME" \
+            --offscreen --game-dir "$PWD/instance" --home "$PWD/instance" | tee launch.json
+          "$CTL" --socket "$PWD/game.sock" open dispatch-world 20261106 creative
+          "$CTL" --socket "$PWD/game.sock" wait-ready 400 | tee ready.json
+          echo "game is in-world; letting the ticks run"
+          sleep 30
+          "$CTL" --socket "$PWD/game.sock" state | tee state.json || true
+          "$CTL" --socket "$PWD/game.sock" quit || true
+          sleep 2
+
+      - name: Assert the hook dispatched in the booted game
+        run: |
+          LOG="$PWD/instance/logs/latest.log"
+          test -f "$LOG" || { echo "the game wrote no log"; exit 1; }
+          echo "--- dispatch markers in the server log ---"
+          grep 'player_tick dispatched' "$LOG" | head -8 || true
+          MATCHES=$(grep -c 'player_tick dispatched' "$LOG" || true)
+          echo "dispatch markers: $MATCHES"
+          [ "$MATCHES" -ge 3 ] || {
+            echo "the mod's player_tick never fired in the booted game"
+            tail -40 "$LOG"
+            exit 1
+          }
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: in-game-dispatch-evidence
+          path: |
+            gate.log
+            chunkcourier-verification.json
+            prepare.jsonl
+            prepare.stderr
+            check.txt
+            launch.json
+            ready.json
+            state.json
+            instance/logs/latest.log
+            game.sock.log
+          if-no-files-found: warn

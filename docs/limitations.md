@@ -303,23 +303,43 @@ dispatch half of the §5.2 last mile is now covered by the gate's dispatch
 smoke: the pinned build's real `dispatch_*` machinery executes the emitted
 delegation inside the same staged workspace the launcher builds.
 
-What remains deferred is booting the GAME with the bundle installed and
-watching a live hook fire. Recon at `horizon@6beacfe9` pinned the exact
-blocker: `horizon-prepare` ("prepares Horizon's resources from your own
-Minecraft Java Edition", flags `--minecraft-dir`/`--client-jar`/`--assets-dir`)
-must produce the prepared resources the client requires (`--resources`,
-`.local/horizon-client/<version>/horizon-resources.json`); without them the
-game stops on an error once its folders exist (the upstream `launch_api` test
-deliberately uses that failure mode). The client itself is cloud-capable —
-`--offscreen` renders without a display, `HORIZON_NO_AUDIO=1`, `--dedicated`
-runs the same binary as a server, `horizon-ctl launch --control` scripts a
-running game — so the whole last mile reduces to one un-obtainable input: a
-legitimately licensed Minecraft Java Edition installation. It cannot be
-committed, downloaded or faked; until someone provides one (a machine or a
-mounted `--minecraft-dir`), the in-game step stays documented as blocked, and
-the game-client tier in port-test.yml stays guarded off. What the dispatch
-smoke deliberately does NOT claim: that the game's tick loop calls the hook
-point — that is Horizon's own `native_player_tick`, one line
-(`mod_api::dispatch_player_tick(self, mod_api::mods())`), verified by
-reading it at the pin. `trait_method` injections for non-catalog targets
-are still not generated.
+The in-game half is now covered too, and it needed no license. The earlier
+recon had stopped at "resources come from your own Minecraft installation" —
+that wall is not load-bearing. `horizon-prepare` takes each pinned input
+individually (`--version-json`, `--client-jar`, `--libraries-dir`,
+`--assets-dir`, `--server-jar`; each "replaces what --minecraft-dir would
+give") and verifies it against research-lock.json's sha1 pins; every one of
+those files is publicly served by Mojang with no authentication
+(piston-meta version JSONs, piston-data client and server jars,
+libraries.minecraft.net). "Horizon never downloads Mojang's files" is the
+EULA posture of its launcher, which downloads them for a signed-in owner —
+it is not a technical restriction of the preparer or the game. The game
+itself boots with no session ("A session the game can't read is reported on
+stderr; the game still starts" — its launch guide §6), and offline names are
+a first-class mode.
+
+So the §5.2 last mile runs in CI on a hosted runner, accountless
+(`.github/workflows/in-game-dispatch.yml`): the fetcher
+(`scripts/fetch_mojang_inputs.py`) pulls the pinned 26.3 version JSON by its
+content address (stable against Mojang's republishes, which change only the
+assetIndex), the client and server jars and all 114 libraries, verifying
+every sha1 against the pins; `horizon-prepare` is built at the pin and
+prepares the resources offline (sounds, languages, panorama, packs, fonts
+are optional extras — the minimal resource set boots a silent game);
+`verify --compile` builds the staged `horizon-native-game` (the gate's
+`AUTO_PORTER_GATE_BUILD` mode, the launcher's no-ALSA engine target); and
+the game boots under Xvfb with `--offscreen` through `horizon-ctl launch
+--game`, no session, headless. The ported hook body calls `Host::broadcast`
+("a system line in every player's chat and the server's log"), so the
+booted game's server log carries one marker line per live dispatch — the
+job fails unless the log has them, and a hook that never fires cannot fake
+them. The gate's dispatch smoke double absorbs `broadcast` for the same
+reason: a real ported body may call it from any hook.
+
+What stays guarded: port-test.yml's game-client tier (parity, in-game
+content and modpack sweeps) still needs a full resource set and interactive
+scenario drivers, and stays off `vars.HORIZON_SELFHOSTED` — honest, not
+blocked-by-license. Nothing in §5.2 itself remains deferred: the emitted
+delegation is proven by the gate's smoke, and the game's own tick loop is
+proven calling it in the booted game. `trait_method` injections for
+non-catalog targets are still not generated.

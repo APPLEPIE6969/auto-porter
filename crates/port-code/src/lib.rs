@@ -1026,7 +1026,7 @@ fn dispatch_smoke_module(wired: &[String], catalog: &HookCatalog) -> String {
         ));
     }
     format!(
-        "/// Dispatch-level smoke: the pinned Horizon build's real `dispatch_*`\n/// machinery runs the emitted delegation end to end — nothing panics and\n/// every wired hook in the `(host, mods)` class is actually reachable\n/// through `hooks()`. The game's hook points call exactly these functions.\n#[cfg(test)]\nmod dispatch_smoke {{\n    use super::hooks;\n\n    struct SmokeHost;\n    impl horizon_client::mod_api::Host for SmokeHost {{}}\n\n{tests}}}\n"
+        "/// Dispatch-level smoke: the pinned Horizon build's real `dispatch_*`\n/// machinery runs the emitted delegation end to end — nothing panics and\n/// every wired hook in the `(host, mods)` class is actually reachable\n/// through `hooks()`. The game's hook points call exactly these functions.\n/// The smoke's Host double keeps `Host`'s panicking probe defaults except\n/// the service a ported body may legitimately call from any hook\n/// (`broadcast`, the system-line sender): the double absorbs the line\n/// instead of panicking, so a real implementation's calls stay inside the\n/// smoke's contract.\n#[cfg(test)]\nmod dispatch_smoke {{\n    use super::hooks;\n\n    struct SmokeHost;\n    impl horizon_client::mod_api::Host for SmokeHost {{\n        fn broadcast(&self, _line: horizon_client::mod_api::Text) {{}}\n    }}\n\n{tests}}}\n"
     )
 }
 
