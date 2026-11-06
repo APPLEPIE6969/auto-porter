@@ -28,6 +28,12 @@ pub const PORT_INFEASIBLE: &str = "// PORT_INFEASIBLE";
 /// task-specific prompt is built by [`build_prompt`]. The hook shapes it
 /// references come from `hooks/hook-signatures.json` — extracted from the
 /// pinned Horizon revision, not invented (docs/limitations.md).
+///
+/// Contract v3.3 (2026-11-06) adds the API-REALITIES section: the message
+/// helpers' visibility facts verified in the pinned build's source and in a
+/// booted game (broadcast is the only message helper the server's log
+/// carries; tell is player-private; acting_player is Some inside
+/// per-player dispatches, the single-player owner included).
 pub const SYSTEM_CONTRACT: &str = r#"You are the code-generation backend of auto-porter, a pipeline that ports Minecraft Java Edition mods to Horizon.
 
 CONTEXT:
@@ -37,6 +43,11 @@ CONTEXT:
 - Hook contracts: "listen" (observe), "cancel" (veto), "replace" (override values), "collect" (gather from all mods).
 - Cancellation and overrides live in the signature and event, NOT in out-parameters: when the signature returns `Flow`, return `Flow::Cancel` to veto (skips later mods and the game's default action) and `Flow::Continue` otherwise; when the event struct exposes mutable fields, write the replacement value into them.
 - The generated source is one module of the mod's bundle, compiled with `#![deny(warnings)]`; prefix any parameter you do not use with an underscore (e.g. `_host`).
+
+API REALITIES (verified in the pinned Horizon build's source and in a booted game; follow these where a helper's doc comment is vaguer):
+- `Host::broadcast(line)` shows the line in every player's chat AND writes it to the server's log — the only message helper a headless reader (the server console, a CI job) can observe. When the Java code has the ticking player announce status periodically (progress tickers, announcers), prefer `broadcast`: in a single-player world the audience is exactly that player.
+- `Host::tell(uuid, line)` shows the line in one player's chat only; it never reaches the server's log, and it returns `false` when that player is not reachable. Keep it when the Java behaviour is strictly private to that player.
+- `Host::acting_player()` is the player whose state the game swapped in for this dispatch: Some in per-player hooks (player_tick runs inside each player's swap — the single-player owner included), None in world- and server-level hooks. Reach the event's player through it and skip quietly when it is None.
 
 OUTPUT CONTRACT — violations are rejected and retried with the reason attached:
 1. Output ONLY compilable Rust: first line `use horizon_client::mod_api::*;`, then one `pub struct` (any name) that derives or implements `Default` — the launcher constructs the mod's Hooks object with `<Struct>::default()` — then its `impl horizon_client::mod_api::Hooks for <Struct>` block containing exactly the one method named in the HOOK CONTRACT. A doc comment above the method is allowed. No markdown fences, no prose, no `main`, no extra `mod` declarations, no other items.

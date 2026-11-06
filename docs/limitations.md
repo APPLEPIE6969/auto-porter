@@ -278,7 +278,9 @@ What the pipeline emits now (the trait-style mod path, the launcher's
   `Flow::Cancel` short-circuits; value hooks take the first implementer), and
   the `pub fn hooks() -> Box<dyn mod_api::Hooks>` entry point the launcher's
   generated `main` calls (`mod_i::hooks()`).
-- The LLM contract (v3.2) additionally requires `#[derive(Default)]` (or
+- The LLM contract (v3.2; v3.3 adds the API-REALITIES section — the message
+  helpers' verified visibility facts, see the in-game dispatch section below)
+  additionally requires `#[derive(Default)]` (or
   `impl Default`) on the generated struct — the launcher constructs the mod's
   hooks with `<Struct>::default()` — and underscore-prefixed unused
   parameters (`_host`, matching Horizon's own `mod_api_hooks.rs` test),
@@ -319,22 +321,63 @@ stderr; the game still starts" — its launch guide §6), and offline names are
 a first-class mode.
 
 So the §5.2 last mile runs in CI on a hosted runner, accountless
-(`.github/workflows/in-game-dispatch.yml`): the fetcher
-(`scripts/fetch_mojang_inputs.py`) pulls the pinned 26.3 version JSON by its
-content address (stable against Mojang's republishes, which change only the
-assetIndex), the client and server jars and all 114 libraries, verifying
-every sha1 against the pins; `horizon-prepare` is built at the pin and
-prepares the resources offline (sounds, languages, panorama, packs, fonts
-are optional extras — the minimal resource set boots a silent game);
-`verify --compile` builds the staged `horizon-native-game` (the gate's
-`AUTO_PORTER_GATE_BUILD` mode, the launcher's no-ALSA engine target); and
-the game boots under Xvfb with `--offscreen` through `horizon-ctl launch
---game`, no session, headless. The ported hook body calls `Host::broadcast`
-("a system line in every player's chat and the server's log"), so the
-booted game's server log carries one marker line per live dispatch — the
-job fails unless the log has them, and a hook that never fires cannot fake
-them. The gate's dispatch smoke double absorbs `broadcast` for the same
-reason: a real ported body may call it from any hook.
+(`.github/workflows/in-game-dispatch.yml`), in two seeds of one pipeline.
+The shared pipeline: the fetcher (`scripts/fetch_mojang_inputs.py`) pulls the
+pinned 26.3 version JSON by its content address (stable against Mojang's
+republishes, which change only the assetIndex), the client and server jars
+and all 114 libraries, verifying every sha1 against the pins;
+`horizon-prepare` is built at the pin and prepares the resources offline
+(sounds, languages, panorama, packs, fonts are optional extras — the minimal
+resource set boots a silent game); `verify --compile` builds the staged
+`horizon-native-game` (the gate's `AUTO_PORTER_GATE_BUILD` mode, the
+launcher's no-ALSA engine target); and the game boots under Xvfb with
+`--offscreen` through `horizon-ctl launch --game`, no session, headless.
+
+Both seeds assert the game kept simulating: two `horizon-ctl state` polls
+20s apart must show the client tick counter advancing (300+ ticks over the
+window, margin for scheduler noise) in an open world with a player in it —
+the real tick loop with the ported mod registered.
+
+The `mock` seed ports the fixture hermetically (the mock LLM serving a
+hand-written body shaped like the model's accepted output). The ported body
+calls `Host::broadcast`, so the booted game's server log carries one marker
+line per live dispatch — the job fails unless the log has them, and a hook
+that never fires cannot fake them.
+
+The `real` seed (gated on the NVIDIA secret) ports the fixture with the real
+NVIDIA NIM generation — the production path, same fixture and source as the
+port-test LLM smoke, every request/response pair traced for the evidence
+artifact. The body is whatever the model wrote, so the observable is
+extracted from the emitted code (`scripts/in_game_markers.py`): broadcast
+literals are log-observable and must appear in the server's log (≥3 lines);
+a body that only `tell`s is player-chat-private — the pinned build writes
+broadcast lines to the server's log (`log::info!`) but tell lines reach one
+player's chat HUD only — so the job says so and the dispatch half of the
+evidence stays with the compile gate's dispatch smoke (the same emitted code
+through the pinned build's real dispatch machinery) plus the state-poll
+assertions. The seed fails before any boot if the real run did not port the
+tick feature (an honest `PORT_INFEASIBLE` included).
+
+The evidence channels were verified in the pinned build's source, not
+assumed: `native_server.rs`'s `native_broadcast` logs the line and sends it
+to every placed guest; `native_tell`/`native_send_all` queue to the acting
+player or deliver to LAN guests and never log; `native_server_players`
+returns the hub's guests only. `acting_player()` is Some inside per-player
+dispatches — `player_tick` fires from `tick_guests` inside each player's
+`as_guest` swap, and a single-player world always runs the integrated hub
+(the owner joins it over the memory connection), so the owner's tick has a
+swapped-in player. These facts are contract v3.3's API-REALITIES section,
+which asks the model for `broadcast` when a Java body announces status
+periodically (the audience in single-player is that player alone, and
+broadcast is the one channel a headless reader can see) and for `tell` when
+the behaviour is strictly private.
+
+The gate's dispatch smoke double absorbs the whole messaging surface for the
+same reason (broadcast and feedback senders, tell and action-bar probes
+answering false, `acting_player` answering None), and each smoke test
+distinguishes a Host-probe panic — a body whose effects need the real game,
+where the delegation itself is proven and the tripped method is reported —
+from any other panic, which is the emitted code's defect and fails the gate.
 
 What stays guarded: port-test.yml's game-client tier (parity, in-game
 content and modpack sweeps) still needs a full resource set and interactive

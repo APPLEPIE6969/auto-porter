@@ -10,10 +10,22 @@ name: In-Game Dispatch
 # signed-in launcher would hand it, each verified against research-lock.json's
 # sha1 pins by `scripts/fetch_mojang_inputs.py` and again by the preparer.
 #
-# Dispatch evidence: the ported hook calls `Host::broadcast` ("a system line
-# in every player's chat and the server's log"), so the booted game's
-# `logs/latest.log` carries a marker line per dispatch. The job fails unless
-# the markers appear — a mod that never gets called cannot fake them.
+# Two seeds, one pipeline:
+# - `mock`: the port is produced hermetically by the mock LLM serving a
+#   hand-written body shaped like the model's accepted output — a body that
+#   calls the Host, so a live dispatch is observable from outside. The job
+#   fails unless the broadcast markers appear in the server's log.
+# - `real`: the port is produced by the real NVIDIA NIM generation (the
+#   production path). The body is whatever the model wrote; the observable is
+#   extracted from the emitted code (`scripts/in_game_markers.py`): broadcast
+#   literals are log-observable and must appear in the server's log; a body
+#   that only `tell`s is player-chat-private (nothing lands in the log) and
+#   the job says so, relying on the compile gate's dispatch smoke and the
+#   state-poll assertions for the dispatch half of the evidence.
+#
+# Both legs assert the game kept simulating: two `horizon-ctl state` polls
+# ~20s apart must show the client tick counter advancing (the real tick loop
+# with the mod live) and a player in an open world.
 #
 # Honesty rules (same as the compile gate): every step runs for real; a
 # failure anywhere fails the job; no step is allowed to pass vacuously.
@@ -28,11 +40,21 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Workflow-level env CAN read secrets (job-level `if` cannot), so this
+  # gates the `real` leg without duplicating a secret into any log.
+  HAS_NVIDIA_KEY: ${{ secrets.NVIDIA_API_KEY != '' }}
 
 jobs:
   in-game-dispatch:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [mock, real]
+    # The `real` leg needs the NVIDIA secret; without it the leg would be
+    # dishonest noise, so it does not run at all (the mock leg always runs).
+    if: matrix.seed != 'real' || env.HAS_NVIDIA_KEY == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -86,6 +108,7 @@ jobs:
         run: cargo build --locked --release -p cli
 
       - name: Port the fixture hermetically (mock LLM, dispatch-marker body)
+        if: matrix.seed == 'mock'
         working-directory: ${{ github.workspace }}
         run: |
           GATE=$(mktemp -d)
@@ -124,6 +147,49 @@ jobs:
           kill "$MOCK" 2>/dev/null || true
           test "$RC" -eq 0
           test -f "$GATE/out/chunkcourier.hnmod"
+          echo "GATE_DIR=$GATE" >> "$GITHUB_ENV"
+
+      - name: Port the fixture with the real NVIDIA NIM model (the production path)
+        if: matrix.seed == 'real'
+        timeout-minutes: 25
+        working-directory: ${{ github.workspace }}
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          GATE=$(mktemp -d)
+          # The repo's porter.toml is already the real-NIM config (provider
+          # nvidia, model pinned, base_url commented). Copy it where the
+          # shared verify step expects the config. Same fixture and --source
+          # as the port-test LLM smoke; every request/response pair is traced
+          # and the trace goes to the workspace at once, so it uploads even
+          # if a later assert fails (autopsy evidence).
+          cp porter.toml "$GATE/porter.toml"
+          set +e
+          AUTO_PORTER_LLM_TRACE="$GATE/llm-trace.jsonl" \
+            ./target/release/auto-porter port tests/fixtures/jars/chunkcourier-neoforge-2.0.0.jar \
+              --config "$GATE/porter.toml" \
+              --llm-provider nvidia --llm-model minimaxai/minimax-m3.1-flash \
+              --source tests/fixtures/sources/chunkcourier \
+              --output "$GATE/out"
+          RC=$?
+          set -e
+          cp "$GATE/llm-trace.jsonl" llm-trace.jsonl 2>/dev/null || true
+          test "$RC" -eq 0
+          test -f "$GATE/out/chunkcourier.hnmod"
+          # The tick feature must really be ported: an honest PORT_INFEASIBLE
+          # or a repair-less failure fails the leg here, before any boot.
+          python3 - "$GATE/out/chunkcourier-report.json" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          tick = [f for f in r["features"] if "playertickevent" in f["feature_id"]]
+          assert tick, "tick feature missing from report"
+          print("tick feature status:", tick[0]["status"])
+          if tick[0]["status"] != "ported":
+              for e in r["errors"]:
+                  if "tickevent" in e.get("feature", ""):
+                      print("LLM error:", e.get("error_type"), "|", str(e.get("message"))[:300])
+              sys.exit("the real NIM run did not port the tick feature")
+          PY
           echo "GATE_DIR=$GATE" >> "$GITHUB_ENV"
 
       - name: Stage and build the game (launcher-style pipeline, keep the tree)
@@ -202,6 +268,12 @@ jobs:
             esac
           done < check.txt
 
+      - name: Extract the real port's in-game observables
+        if: matrix.seed == 'real'
+        run: |
+          python3 scripts/in_game_markers.py "$GATE_DIR/out" \
+            --markers markers.txt --json markers.json
+
       - name: Build horizon-ctl in the staged tree
         working-directory: ${{ github.workspace }}/gate-work/stage
         env:
@@ -224,31 +296,90 @@ jobs:
             --offscreen --game-dir "$PWD/instance" --home "$PWD/instance" | tee launch.json
           "$CTL" --socket "$PWD/game.sock" open dispatch-world 20261106 creative
           "$CTL" --socket "$PWD/game.sock" wait-ready 400 | tee ready.json
-          echo "game is in-world; letting the ticks run"
-          sleep 30
-          "$CTL" --socket "$PWD/game.sock" state | tee state.json || true
+          echo "game is in-world; watching the ticks run"
+          "$CTL" --socket "$PWD/game.sock" state | tee state-0.json
+          sleep 20
+          "$CTL" --socket "$PWD/game.sock" state | tee state-1.json
+          sleep 10
+          "$CTL" --socket "$PWD/game.sock" state | tee state-2.json || true
           "$CTL" --socket "$PWD/game.sock" quit || true
           sleep 2
 
-      - name: Assert the hook dispatched in the booted game
+      - name: Assert the hook dispatched and the game kept simulating
         run: |
           LOG="$PWD/instance/logs/latest.log"
           test -f "$LOG" || { echo "the game wrote no log"; exit 1; }
+          # The game must have kept simulating with the mod live: the client
+          # tick counter advances 20/s (300 over the 20s window; margin for
+          # scheduler noise), in an open world, with a player in it.
+          python3 - <<'PY'
+          import json, sys
+
+          def read_state(path):
+              text = open(path).read()
+              start, end = text.find("{"), text.rfind("}")
+              if start < 0 or end <= start:
+                  sys.exit(f"no JSON object in {path}")
+              return json.loads(text[start : end + 1])
+
+          s0 = read_state("state-0.json")
+          s1 = read_state("state-1.json")
+          for name, s in (("poll 0", s0), ("poll 1", s1)):
+              assert s.get("world"), f"{name}: no world open"
+              assert s.get("player"), f"{name}: no player in the world"
+              print(f"{name}: ticks={s['ticks']} world={s['world']!r} "
+                    f"dim={s.get('dimension')!r} mode={s.get('gamemode')!r}")
+          delta = s1["ticks"] - s0["ticks"]
+          print(f"ticks advanced: {delta} over the 20s window")
+          assert delta >= 300, f"the tick loop stalled: only {delta} ticks in 20s"
+          print("the game kept simulating with the ported mod live")
+          PY
           echo "--- dispatch markers in the server log ---"
-          grep 'player_tick dispatched' "$LOG" | head -8 || true
-          MATCHES=$(grep -c 'player_tick dispatched' "$LOG" || true)
-          echo "dispatch markers: $MATCHES"
-          [ "$MATCHES" -ge 3 ] || {
-            echo "the mod's player_tick never fired in the booted game"
-            tail -40 "$LOG"
-            exit 1
-          }
+          if [ "${{ matrix.seed }}" = "mock" ]; then
+            grep 'player_tick dispatched' "$LOG" | head -8 || true
+            MATCHES=$(grep -c 'player_tick dispatched' "$LOG" || true)
+            echo "dispatch markers: $MATCHES"
+            [ "$MATCHES" -ge 3 ] || {
+              echo "the mod's player_tick never fired in the booted game"
+              tail -40 "$LOG"
+              exit 1
+            }
+          else
+            # The real port's body is whatever the model wrote. Broadcast
+            # markers are log-observable and must appear; a tell-only body is
+            # player-chat-private, and its dispatch evidence is the compile
+            # gate's dispatch smoke plus the state-poll assertions above.
+            if [ -s markers.txt ]; then
+              echo "expected broadcast markers (from the emitted code):"
+              cat markers.txt
+              MATCHES=0
+              while IFS= read -r marker; do
+                [ -n "$marker" ] || continue
+                C=$(grep -cF -- "$marker" "$LOG" || true)
+                echo "  $C x $marker"
+                MATCHES=$((MATCHES + C))
+              done < markers.txt
+              echo "dispatch markers: $MATCHES"
+              [ "$MATCHES" -ge 3 ] || {
+                echo "the emitted broadcast markers never appeared in the server's log"
+                tail -40 "$LOG"
+                exit 1
+              }
+            else
+              echo "the real port's body carries no broadcast: its messages are"
+              echo "tell-only (player chat HUD, which the server's log does not"
+              echo "carry). The dispatch half of the evidence stays with the"
+              echo "compile gate's dispatch smoke (same emitted code, the pinned"
+              echo "build's real dispatch machinery) and the state-poll ticks"
+              echo "asserted above; the log cannot show this body's effect."
+            fi
+          fi
 
       - name: Upload the evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: in-game-dispatch-evidence
+          name: in-game-dispatch-evidence-${{ matrix.seed }}
           path: |
             gate.log
             chunkcourier-verification.json
@@ -257,7 +388,12 @@ jobs:
             check.txt
             launch.json
             ready.json
-            state.json
+            state-0.json
+            state-1.json
+            state-2.json
+            markers.json
+            markers.txt
+            llm-trace.jsonl
             instance/logs/latest.log
             game.sock.log
           if-no-files-found: warn

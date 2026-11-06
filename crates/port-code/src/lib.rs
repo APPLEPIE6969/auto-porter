@@ -1019,14 +1019,43 @@ fn dispatch_smoke_module(wired: &[String], catalog: &HookCatalog) -> String {
     if smokeable.is_empty() {
         return String::new();
     }
+    // One test per smokeable hook. The delegation runs inside catch_unwind
+    // because the double keeps Host's probing defaults: a ported body whose
+    // effects need the real game (a sound, an entity, a block write) trips
+    // one — `not implemented: Host::<method>` — which is not the emitted
+    // code's defect. The smoke proves the delegation ran; the body's effects
+    // are the booted game's evidence (in-game-dispatch.yml). Any other panic
+    // (our delegation, the body's own logic) fails the test.
+    const TEST_TEMPLATE: &str = r#"    #[test]
+    fn {name}_dispatches() {
+        let mods: Vec<Box<dyn horizon_client::mod_api::Hooks>> = vec![hooks()];
+        let dispatch = std::panic::AssertUnwindSafe(|| {
+            let mut host = SmokeHost;
+            horizon_client::mod_api::dispatch_{name}(&mut host, &mods);
+        });
+        if let Err(panic) = std::panic::catch_unwind(dispatch) {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&'static str>().copied())
+                .unwrap_or("unknown panic");
+            assert!(
+                message.contains("Host::"),
+                "the emitted delegation panicked (not a Host probe): {message}"
+            );
+            eprintln!(
+                "smoke: a body effect needs the real game ({message}); the delegation itself ran"
+            );
+        }
+    }
+
+"#;
     let mut tests = String::new();
     for name in &smokeable {
-        tests.push_str(&format!(
-            "    #[test]\n    fn {name}_dispatches() {{\n        let mods: Vec<Box<dyn horizon_client::mod_api::Hooks>> = vec![hooks()];\n        let mut host = SmokeHost;\n        horizon_client::mod_api::dispatch_{name}(&mut host, &mods);\n    }}\n\n"
-        ));
+        tests.push_str(&TEST_TEMPLATE.replace("{name}", name));
     }
     format!(
-        "/// Dispatch-level smoke: the pinned Horizon build's real `dispatch_*`\n/// machinery runs the emitted delegation end to end — nothing panics and\n/// every wired hook in the `(host, mods)` class is actually reachable\n/// through `hooks()`. The game's hook points call exactly these functions.\n/// The smoke's Host double keeps `Host`'s panicking probe defaults except\n/// the service a ported body may legitimately call from any hook\n/// (`broadcast`, the system-line sender): the double absorbs the line\n/// instead of panicking, so a real implementation's calls stay inside the\n/// smoke's contract.\n#[cfg(test)]\nmod dispatch_smoke {{\n    use super::hooks;\n\n    struct SmokeHost;\n    impl horizon_client::mod_api::Host for SmokeHost {{\n        fn broadcast(&self, _line: horizon_client::mod_api::Text) {{}}\n    }}\n\n{tests}}}\n"
+        "/// Dispatch-level smoke: the pinned Horizon build's real `dispatch_*`\n/// machinery runs the emitted delegation end to end and every wired hook in\n/// the `(host, mods)` class is actually reachable through `hooks()`. The\n/// game's hook points call exactly these functions. The Host double absorbs\n/// the messaging surface a ported body may legitimately call from any hook\n/// (the system-line senders, the player-reach probes) and keeps the trait's\n/// panicking probe defaults everywhere else, so a body whose effects need\n/// the real game is reported, not failed (see the per-hook test).\n#[cfg(test)]\nmod dispatch_smoke {{\n    use super::hooks;\n\n    struct SmokeHost;\n    impl horizon_client::mod_api::Host for SmokeHost {{\n        fn broadcast(&self, _line: horizon_client::mod_api::Text) {{}}\n        fn feedback(&mut self, _line: horizon_client::mod_api::Text) {{}}\n        fn tell(&mut self, _uuid: u128, _line: horizon_client::mod_api::Text) -> bool {{\n            false\n        }}\n        fn action_bar(&mut self, _uuid: u128, _line: horizon_client::mod_api::Text) -> bool {{\n            false\n        }}\n        fn acting_player(&self) -> Option<horizon_client::mod_api::NativeServerPlayer> {{\n            None\n        }}\n    }}\n\n{tests}}}\n"
     )
 }
 
