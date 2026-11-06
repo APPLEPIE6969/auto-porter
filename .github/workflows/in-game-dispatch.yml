@@ -219,6 +219,7 @@ jobs:
           GAME="$PWD/gate-target/fast/horizon-client"
           mkdir -p instance
           "$CTL" --socket "$PWD/game.sock" launch --game "$GAME" \
+            --resources "$PWD/resources" \
             --offscreen --game-dir "$PWD/instance" --home "$PWD/instance" | tee launch.json
           "$CTL" --socket "$PWD/game.sock" open dispatch-world 20261106 creative
           "$CTL" --socket "$PWD/game.sock" wait-ready 400 | tee ready.json
