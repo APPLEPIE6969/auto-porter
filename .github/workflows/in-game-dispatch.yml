@@ -165,7 +165,9 @@ jobs:
       - name: Build horizon-prepare at the pin (its own target dir)
         working-directory: ${{ github.workspace }}/gate-work
         run: |
-          cp -a "/tmp/auto-porter-horizon-source/${{ steps.pins.outputs.revision }}/horizon" .
+          # Copy out of the cache: the preparer writes exporters' scratch into
+          # the root's .local/, which must not pollute the cached archive.
+          cp -a "/tmp/auto-porter-horizon-source/${{ steps.pins.outputs.revision }}" horizon
           cd horizon
           cargo build --locked --release -p horizon-prepare \
             --target-dir "$RUNNER_TEMP/horizon-prep-target"
