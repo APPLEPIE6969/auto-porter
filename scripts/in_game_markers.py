@@ -15,9 +15,16 @@ evidence channel is the mod's own Host calls:
 
 This script scans the port output's emitted Rust sources for those calls and
 writes the greppable prefixes (format strings cut at the first `{`) to
-`--markers` (one per line) and a JSON summary to `--json`. It never fails the
-pipeline: an empty marker set is honest (the body's effects are not
-log-observable), the caller decides what to require.
+`--markers` (one per line) and a JSON summary to `--json`. The emitted code
+lives inside the `.hnmod` bundle (a zip: `horizon-native.json` +
+`mixins/<id>/...`), so the scan covers `.rs` members of every `*.hnmod` in
+the output dir as well as any loose `*.rs` files.
+
+Honesty contract: an empty marker set is honest ONLY after a real scan (a
+genuinely tell-only body); a zero-source scan is an extraction error, not
+evidence of anything, and this script exits nonzero rather than let a caller
+mistake "scanned nothing" for "the body is tell-only". The caller decides
+what to require beyond that.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ import argparse
 import json
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 CALL_RE = re.compile(r"\b(?:broadcast|tell)\s*\(")
@@ -47,9 +55,8 @@ def stable_prefix(literal: str) -> str:
     return unescape(literal).split("{", 1)[0].strip()
 
 
-def scan_file(path: Path) -> tuple[list[str], list[str]]:
-    """Return (broadcast_literals, tell_literals) raw, in file order."""
-    text = path.read_text(encoding="utf-8", errors="replace")
+def scan_text(text: str) -> tuple[list[str], list[str]]:
+    """Return (broadcast_literals, tell_literals) raw, in source order."""
     broadcast: list[str] = []
     tell: list[str] = []
     for call in CALL_RE.finditer(text):
@@ -65,6 +72,28 @@ def scan_file(path: Path) -> tuple[list[str], list[str]]:
     return broadcast, tell
 
 
+def collect_rs_sources(output: Path) -> list[tuple[str, str]]:
+    """Every emitted .rs source as (label, text): loose files under `output`
+    (as the port pipeline may stage), then `.rs` members inside `*.hnmod`
+    bundles in `output` (the pipeline's actual layout: the emitted crate
+    lives at mixins/<id>/ inside the bundle zip)."""
+    sources: list[tuple[str, str]] = []
+    for path in sorted(output.rglob("*.rs")):
+        if "target" in path.parts:
+            continue
+        sources.append(
+            (str(path.relative_to(output)), path.read_text(encoding="utf-8", errors="replace"))
+        )
+    for hnmod in sorted(output.rglob("*.hnmod")):
+        with zipfile.ZipFile(hnmod) as z:
+            for name in z.namelist():
+                if name.endswith(".rs") and not name.endswith("/"):
+                    sources.append(
+                        (f"{hnmod.name}!/{name}", z.read(name).decode("utf-8", errors="replace"))
+                    )
+    return sources
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("output", type=Path, help="the port's output dir (emitted crate sources)")
@@ -72,11 +101,20 @@ def main() -> int:
     ap.add_argument("--json", dest="as_json", type=Path, help="write the JSON summary here")
     args = ap.parse_args()
 
-    rs_files = sorted(p for p in args.output.rglob("*.rs") if "target" not in p.parts)
+    sources = collect_rs_sources(args.output)
+    if not sources:
+        print(
+            f"no emitted Rust found in {args.output}: no loose .rs files and "
+            "no .hnmod bundle — nothing was scanned, so no claim about the "
+            "body's observables can be made (extraction error, not a "
+            "tell-only body)",
+            file=sys.stderr,
+        )
+        return 2
     broadcast: list[str] = []
     tell: list[str] = []
-    for path in rs_files:
-        b, t = scan_file(path)
+    for _, text in sources:
+        b, t = scan_text(text)
         broadcast += b
         tell += t
 
@@ -88,7 +126,7 @@ def main() -> int:
             markers.append(prefix)
 
     summary = {
-        "files_scanned": len(rs_files),
+        "files_scanned": len(sources),
         "broadcast_calls": len(broadcast),
         "tell_calls": len(tell),
         "log_observable": bool(markers),
@@ -103,7 +141,7 @@ def main() -> int:
         args.markers.write_text("".join(m + "\n" for m in markers), encoding="utf-8")
 
     print(
-        f"scanned {len(rs_files)} emitted .rs file(s): "
+        f"scanned {len(sources)} emitted Rust source(s): "
         f"{len(broadcast)} broadcast call(s), {len(tell)} tell call(s); "
         f"log-observable markers: {len(markers)}"
     )
