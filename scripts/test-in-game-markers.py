@@ -130,10 +130,14 @@ code, stdout, _ = run(out4, "wrapper-double")
 j = json.loads((out4 / "j.json").read_text())
 assert code == 0, "wrapper-double must succeed"
 assert j["files_scanned"] == 2, j
+# The body itself carries one broadcast AND one tell; the double's
+# definitions must add nothing of their own.
 assert j["broadcast_calls"] == 1, f"only the body's broadcast is a call site: {j}"
-assert j["tell_calls"] == 0, f"the double's fn tell must not count: {j}"
+assert j["tell_calls"] == 1, f"exactly the body's tell, the double's fn tell excluded: {j}"
 assert j["broadcast_markers"] == ["[chunkcourier] player_tick dispatched (in-game tick #"], j
-assert "unknown panic" not in j["tell_literals"] + j["broadcast_markers"], j
+assert j["tell_literals"] == ["chunkcourier: parcels ticked"], j
+assert "unknown panic" not in j["tell_literals"] + j["broadcast_markers"], (
+    "the smoke double's panic fallback must not appear as a marker")
 print("PASS wrapper-double (definitions excluded)\n")
 
 print("ALL MARKER-EXTRACTOR CASES PASS")
