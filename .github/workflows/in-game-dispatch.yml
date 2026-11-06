@@ -145,7 +145,10 @@ jobs:
           if compile["status"] != "pass":
               sys.exit(f"compile gate did not pass: {compile['status']}")
           EOF
-          test -x gate-target/fast/horizon-native-game
+          # The staged package is horizon-native-game but its BIN is named
+          # horizon-client — the launcher's convention, so the launcher can
+          # start it as the client (verify/src/compile.rs stage_api_crate).
+          test -x gate-target/fast/horizon-client
 
       - name: A JDK for the preparer's exporters (the pin wants Java 25)
         uses: actions/setup-java@v4
@@ -210,7 +213,7 @@ jobs:
           Xvfb :99 -screen 0 1280x720x24 &
           export DISPLAY=:99
           CTL="$PWD/gate-target/fast/horizon-ctl"
-          GAME="$PWD/gate-target/fast/horizon-native-game"
+          GAME="$PWD/gate-target/fast/horizon-client"
           mkdir -p instance
           "$CTL" --socket "$PWD/game.sock" launch --game "$GAME" \
             --offscreen --game-dir "$PWD/instance" --home "$PWD/instance" | tee launch.json
