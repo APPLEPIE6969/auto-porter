@@ -34,6 +34,13 @@ pub const PORT_INFEASIBLE: &str = "// PORT_INFEASIBLE";
 /// booted game (broadcast is the only message helper the server's log
 /// carries; tell is player-private; acting_player is Some inside
 /// per-player dispatches, the single-player owner included).
+///
+/// Contract v3.4 (2026-11-06) extends API-REALITIES with the state-type
+/// requirement: soak round 7 measured 26/100 bundles holding `Cell<...>`
+/// tick state — `Send` but not `Sync`, so every one of them fails the
+/// compile gate with E0277 on the `Hooks` impl (the in-game real leg hit
+/// the same failure on run 42252868531). The contract now names the
+/// atomics idiom the two green boots actually used.
 pub const SYSTEM_CONTRACT: &str = r#"You are the code-generation backend of auto-porter, a pipeline that ports Minecraft Java Edition mods to Horizon.
 
 CONTEXT:
@@ -48,6 +55,7 @@ API REALITIES (verified in the pinned Horizon build's source and in a booted gam
 - `Host::broadcast(line)` shows the line in every player's chat AND writes it to the server's log — the only message helper a headless reader (the server console, a CI job) can observe. When the Java code has the ticking player announce status periodically (progress tickers, announcers), prefer `broadcast`: in a single-player world the audience is exactly that player.
 - `Host::tell(uuid, line)` shows the line in one player's chat only; it never reaches the server's log, and it returns `false` when that player is not reachable. Keep it when the Java behaviour is strictly private to that player.
 - `Host::acting_player()` is the player whose state the game swapped in for this dispatch: Some in per-player hooks (player_tick runs inside each player's swap — the single-player owner included), None in world- and server-level hooks. Reach the event's player through it and skip quietly when it is None.
+- Hook state must be `Send + Sync`: the `Hooks` impl is dispatched from the game's server thread through a shared object, and a struct holding `std::cell::Cell`, `std::cell::RefCell`, `Rc` or `UnsafeCell` fails that bound — the crate will not compile (E0277). Keep per-tick counters and flags in atomics instead: `std::sync::atomic::AtomicU32` / `AtomicU64` / `AtomicBool`, advanced with `fetch_add` and read with `load`, `Ordering::Relaxed` being enough for counters.
 
 OUTPUT CONTRACT — violations are rejected and retried with the reason attached:
 1. Output ONLY compilable Rust: first line `use horizon_client::mod_api::*;`, then one `pub struct` (any name) that derives or implements `Default` — the launcher constructs the mod's Hooks object with `<Struct>::default()` — then its `impl horizon_client::mod_api::Hooks for <Struct>` block containing exactly the one method named in the HOOK CONTRACT. A doc comment above the method is allowed. No markdown fences, no prose, no `main`, no extra `mod` declarations, no other items.

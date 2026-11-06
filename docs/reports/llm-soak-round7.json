@@ -1,0 +1,57 @@
+{
+ "round": 7,
+ "contract": "v3.3",
+ "model": "minimaxai/minimax-m3.1-flash",
+ "runs": 100,
+ "ported": 100,
+ "first_try": 71,
+ "llm_calls_total": 159,
+ "failed_entries": {
+  "LLM call exceeded 180s": 33,
+  "HTTP 429": 26
+ },
+ "accepted_latency_ms": {
+  "min": 51709,
+  "p50": 98818,
+  "p90": 149062,
+  "max": 172048
+ },
+ "finish_reasons": {
+  "stop": 100
+ },
+ "channel_usage": {
+  "broadcast_sites": 89,
+  "tell_sites": 11
+ },
+ "acting_player_guards": 99,
+ "sync_risk_bundles": 26,
+ "sync_risk_runs": [
+  "s0-16",
+  "s1-02",
+  "s1-03",
+  "s1-06",
+  "s1-07",
+  "s1-08",
+  "s1-18",
+  "s1-19",
+  "s2-04",
+  "s2-05",
+  "s2-06",
+  "s2-07",
+  "s2-08",
+  "s2-16",
+  "s2-19",
+  "s2-20",
+  "s3-01",
+  "s3-03",
+  "s3-08",
+  "s3-16",
+  "s4-04",
+  "s4-13",
+  "s4-14",
+  "s4-15",
+  "s4-17",
+  "s4-20"
+ ],
+ "note": "ported rate is LLM acceptance only; sync_risk bundles would fail the compile gate (E0277) \u2014 the round's actionable finding"
+}
