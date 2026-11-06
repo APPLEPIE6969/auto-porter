@@ -124,7 +124,20 @@ against `horizon@6beacfe9`), driven headlessly by `verify::compile`:
    features` being the launcher's headless engine target (no ALSA/libudev).
    `AUTO_PORTER_GATE_BUILD=1` upgrades the step to a full `cargo build`
    (proves linking; needs `cc` and either the dev libraries or the headless
-   target).
+   target),
+7. the §5.2 dispatch smoke: the emitted api crate carries a `#[cfg(test)]
+   dispatch_smoke` module with one test per wired hook whose real
+   `dispatch_*` signature is synthesizable outside the game (exactly
+   `host: &mut dyn Host, mods: &[Box<dyn Hooks>]` — ground truth is the
+   `dispatch_args` column the extractor now captures per hook; events are
+   `#[non_exhaustive]`, so these free functions are the only dispatch path
+   from outside, and the game's own hook points call exactly them). After a
+   clean check the gate runs `cargo test --locked --profile fast
+   --no-default-features -p <api crate> --lib` on the staged tree: the
+   pinned Horizon build's real dispatch machinery executes the emitted
+   delegation. A smoke failure fails the gate; a bundle with no
+   synthesizable hook reports `no dispatch smoke` honestly instead of
+   inventing coverage.
 
 The verdict is honest by construction: `Pass` only when the pinned package
 type-checks (reason carries the pipeline summary), `Fail` with the compiler
@@ -283,12 +296,30 @@ What the pipeline emits now (the trait-style mod path, the launcher's
 Honest fallbacks, not fabrications: a hook without an extracted signature
 (2 of 386, render-crate) renders no method at all — the trait's default no-op
 keeps the crate buildable and the hook is reported as unwired; the bundle
-assembler returns the same warnings into the report. What remains deferred is
-the last mile of §5.2: booting the game with the bundle installed and
-watching the hooks dispatch in-game (`horizon-ctl` + Agent Control — needs
-a machine with the actual Horizon game client, which does not exist in this
-setup; the self-hosted tier in port-test.yml stays guarded off until one
-does). Compiling the bundle is no longer deferred — the
-launcher-style build runs headlessly in `porter verify --compile` (§3) and in
-ci (bundle-compile.yml). `trait_method` injections for non-catalog targets
+assembler returns the same warnings into the report. Compiling the bundle is
+no longer deferred — the launcher-style build runs headlessly in
+`porter verify --compile` (§3) and in ci (bundle-compile.yml) — and the
+dispatch half of the §5.2 last mile is now covered by the gate's dispatch
+smoke: the pinned build's real `dispatch_*` machinery executes the emitted
+delegation inside the same staged workspace the launcher builds.
+
+What remains deferred is booting the GAME with the bundle installed and
+watching a live hook fire. Recon at `horizon@6beacfe9` pinned the exact
+blocker: `horizon-prepare` ("prepares Horizon's resources from your own
+Minecraft Java Edition", flags `--minecraft-dir`/`--client-jar`/`--assets-dir`)
+must produce the prepared resources the client requires (`--resources`,
+`.local/horizon-client/<version>/horizon-resources.json`); without them the
+game stops on an error once its folders exist (the upstream `launch_api` test
+deliberately uses that failure mode). The client itself is cloud-capable —
+`--offscreen` renders without a display, `HORIZON_NO_AUDIO=1`, `--dedicated`
+runs the same binary as a server, `horizon-ctl launch --control` scripts a
+running game — so the whole last mile reduces to one un-obtainable input: a
+legitimately licensed Minecraft Java Edition installation. It cannot be
+committed, downloaded or faked; until someone provides one (a machine or a
+mounted `--minecraft-dir`), the in-game step stays documented as blocked, and
+the game-client tier in port-test.yml stays guarded off. What the dispatch
+smoke deliberately does NOT claim: that the game's tick loop calls the hook
+point — that is Horizon's own `native_player_tick`, one line
+(`mod_api::dispatch_player_tick(self, mod_api::mods())`), verified by
+reading it at the pin. `trait_method` injections for non-catalog targets
 are still not generated.

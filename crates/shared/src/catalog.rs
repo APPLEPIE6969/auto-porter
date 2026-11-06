@@ -110,6 +110,14 @@ pub struct HookSignature {
     pub event: String,
     #[serde(default)]
     pub event_fields: String,
+    /// The real `mod_api::dispatch_<name>` free function's parameters
+    /// (whitespace-normalized, order preserved), extracted from the same
+    /// generated source. The game's hook points call `dispatch_*` — events
+    /// are `#[non_exhaustive]`, so nothing outside the game can construct
+    /// them. A dispatch-level smoke test can only synthesize hooks whose
+    /// dispatch takes exactly `host: &mut dyn Host, mods: &[Box<dyn Hooks>]`.
+    #[serde(default)]
+    pub dispatch_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

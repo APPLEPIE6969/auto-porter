@@ -59,14 +59,27 @@ fn run_inner(hnmod: &Path, cfg: &PorterConfig, verbose: bool) -> Result<CompileR
         .ok_or("cargo is not on PATH; the compile gate drives the pinned build with Cargo")?;
 
     // ---- unpack the bundle ----
-    let work = std::env::temp_dir().join(format!(
-        "auto-porter-compile-gate-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    ));
+    // `AUTO_PORTER_GATE_WORK` pins the work dir: cargo fingerprints key on
+    // absolute paths, so a stable stage + target dir lets repeated gate runs
+    // (a local re-verify, a CI cache) reuse every already-checked crate
+    // instead of recompiling the pinned tree from zero.
+    let work = match std::env::var_os("AUTO_PORTER_GATE_WORK") {
+        Some(dir) => {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            dir
+        }
+        None => std::env::temp_dir().join(format!(
+            "auto-porter-compile-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        )),
+    };
     let bundle_dir = work.join("bundle");
     std::fs::create_dir_all(&bundle_dir)
         .map_err(|e| format!("cannot create {}: {e}", bundle_dir.display()))?;
@@ -273,19 +286,74 @@ fn gate(
         },
     );
     match run_capturing(&mut check, verbose) {
-        Ok(()) => Ok(CompileResult {
-            status: CheckStatus::Pass,
-            reason: Some(summary),
-        }),
+        Ok(()) => {}
         Err(tail) => {
             summary.push_str(" failed; compiler tail:\n");
             summary.push_str(&tail);
-            Ok(CompileResult {
+            return Ok(CompileResult {
                 status: CheckStatus::Fail,
                 reason: Some(summary),
-            })
+            });
         }
     }
+
+    // §5.2 dispatch smoke: the emitted api crate carries a `#[cfg(test)]
+    // dispatch_smoke` module for every wired hook whose real `dispatch_*`
+    // signature is synthesizable outside the game. Run it against the
+    // staged tree: the pinned Horizon build's own dispatch machinery
+    // executes the emitted delegation. A smoke failure fails the gate.
+    match staged_api_smoke(&stage, mod_id) {
+        Some((pkg, count)) if count > 0 => {
+            let mut test = Command::new(cargo);
+            test.arg("test")
+                .arg("--locked")
+                .arg("--profile")
+                .arg("fast")
+                .arg("--no-default-features")
+                .arg("-p")
+                .arg(&pkg)
+                .arg("--lib");
+            test.current_dir(&stage);
+            if let Some(dir) = std::env::var_os("AUTO_PORTER_GATE_TARGET") {
+                test.env("CARGO_TARGET_DIR", dir);
+            }
+            match run_capturing(&mut test, verbose) {
+                Ok(()) => summary.push_str(&format!(
+                    "; dispatch smoke: {count} hook(s) dispatched through the real mod_api"
+                )),
+                Err(tail) => {
+                    summary.push_str(&format!(
+                        "dispatch smoke failed ({count} hook(s)); compiler tail:\n{tail}"
+                    ));
+                    return Ok(CompileResult {
+                        status: CheckStatus::Fail,
+                        reason: Some(summary),
+                    });
+                }
+            }
+        }
+        _ => summary.push_str("; no dispatch smoke (no wired hook in the synthesizable class)"),
+    }
+    Ok(CompileResult {
+        status: CheckStatus::Pass,
+        reason: Some(summary),
+    })
+}
+
+/// The staged api crate's package name and the number of dispatch-smoke
+/// tests its `lib.rs` carries. The package name is read from the STAGED
+/// manifest (the launcher's own copy step), the count from the emitted
+/// `mod dispatch_smoke` (`#[test]` occurrences — the only tests the
+/// emitter writes into an api crate).
+fn staged_api_smoke(stage: &Path, mod_id: &str) -> Option<(String, usize)> {
+    let base = stage.join("native-api").join(mod_id);
+    let manifest = std::fs::read_to_string(base.join("Cargo.toml")).ok()?;
+    let name = manifest.lines().find_map(|l| {
+        l.strip_prefix("name = \"")
+            .map(|rest| rest.trim_end_matches('"').to_string())
+    })?;
+    let lib = std::fs::read_to_string(base.join("src").join("lib.rs")).ok()?;
+    Some((name, lib.matches("#[test]").count()))
 }
 
 /// The launcher's `api::stage`: copy `[api] path` to `native-api/<id>/`,

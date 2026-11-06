@@ -108,6 +108,26 @@ def parse_host_methods(src: str) -> dict:
     return parse_trait_methods(src, "Host")
 
 
+def parse_dispatch_args(src: str) -> dict:
+    """`dispatch_<name>` free functions -> normalized list of parameter strings.
+
+    The hook POINTS in the game call these (never the trait methods
+    directly: events are `#[non_exhaustive]`, so only `dispatch_*` can
+    construct them). The arg list is what a dispatch-level smoke test must
+    synthesize; only the `(host, mods)`-only shape is safely callable from
+    outside without inventing field values.
+    """
+    out = {}
+    for dm in re.finditer(r"\npub fn dispatch_([a-z_0-9]+)\s*\(", src):
+        name = dm.group(1)
+        close = balanced(src, dm.end() - 1, "(", ")")
+        if close < 0:
+            continue
+        params = re.sub(r"\s+", " ", src[dm.end() : close - 1].strip())
+        out[name] = [a for a in (p.strip() for p in params.split(",")) if a] if params else []
+    return out
+
+
 def main() -> int:
     catalog = json.loads((ROOT / "hooks" / "native-hooks.json").read_text())
     src_line = catalog.get("source", "")
@@ -124,8 +144,10 @@ def main() -> int:
     hooks = parse_trait_methods(generated, "Hooks")
     events = parse_event_structs(generated)
     host_methods = parse_host_methods(host_src)
+    dispatch_args = parse_dispatch_args(generated)
     flow_m = re.search(r"pub enum Flow \{[^}]*\}", mod_api, re.S)
     flow_def = re.sub(r"\s+", " ", flow_m.group(0)) if flow_m else ""
+    SMOKE_ARGS = ["host: &mut dyn Host", "mods: &[Box<dyn Hooks>]"]
 
     catalog_hooks = [h["name"] for h in catalog["hooks"]]
     missing = [h for h in catalog_hooks if h not in hooks]
@@ -156,7 +178,11 @@ def main() -> int:
             "doc": sig["doc"],
             "event": event_name,
             "event_fields": events.get(event_name, ""),
+            "dispatch_args": dispatch_args.get(name, []),
         }
+    smoke_class = [n for n in covered if table["hooks"][n]["dispatch_args"] == SMOKE_ARGS]
+    print(f"dispatch smoke class (dispatch_(host, mods) only): {len(smoke_class)}")
+    print("  ", ", ".join(sorted(smoke_class)))
     if unmatched_events:
         print("WARNING event structs not parsed:", ", ".join(sorted(unmatched_events)))
 

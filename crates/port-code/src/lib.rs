@@ -969,9 +969,13 @@ fn engine_lib_rs(
     }
 
     let mut methods = String::new();
+    let mut wired: Vec<String> = Vec::new();
     for hook in hooks_used {
         match hook_delegation(hook, catalog, modules) {
-            Some(code) => methods.push_str(&code),
+            Some(code) => {
+                methods.push_str(&code);
+                wired.push(hook.name.clone());
+            }
             None => match catalog.signature(&hook.name) {
                 Some(_) => warnings.push(format!(
                     "hook `{}` has a signature but no implementing module; it stays unwired",
@@ -985,10 +989,45 @@ fn engine_lib_rs(
         }
     }
 
+    let smoke = dispatch_smoke_module(&wired, catalog);
     let lib = format!(
-        "{header}\n/// Every feature module's hooks, constructed with `<_>::default()` by the\n/// launcher's generated entry point. The delegations below forward each\n/// catalog hook to the feature modules that implement it.\n#[derive(Default)]\npub struct PortedHooks {{\n{fields}}}\n\nimpl horizon_client::mod_api::Hooks for PortedHooks {{\n{methods}}}\n\n/// The launcher's entry point: one boxed `Hooks` object per api crate.\npub fn hooks() -> Box<dyn horizon_client::mod_api::Hooks> {{\n    Box::new(PortedHooks::default())\n}}\n"
+        "{header}\n/// Every feature module's hooks, constructed with `<_>::default()` by the\n/// launcher's generated entry point. The delegations below forward each\n/// catalog hook to the feature modules that implement it.\n#[derive(Default)]\npub struct PortedHooks {{\n{fields}}}\n\nimpl horizon_client::mod_api::Hooks for PortedHooks {{\n{methods}}}\n\n/// The launcher's entry point: one boxed `Hooks` object per api crate.\npub fn hooks() -> Box<dyn horizon_client::mod_api::Hooks> {{\n    Box::new(PortedHooks::default())\n}}\n{smoke}"
     );
     (lib, warnings)
+}
+
+/// The `#[cfg(test)]` dispatch smoke for every wired hook whose real
+/// `dispatch_*` signature is synthesizable from outside the game: exactly
+/// `host: &mut dyn Host, mods: &[Box<dyn Hooks>]` (ground truth:
+/// `dispatch_args` in the signature table). Events are `#[non_exhaustive]`,
+/// so these free functions are the ONLY way to dispatch from outside — and
+/// the game's own hook points call exactly them, one line each. Empty when
+/// no wired hook is in the class: the gate then just compiles, and reports
+/// no dispatch coverage.
+fn dispatch_smoke_module(wired: &[String], catalog: &HookCatalog) -> String {
+    const HOST_ARG: &str = "host: &mut dyn Host";
+    const MODS_ARG: &str = "mods: &[Box<dyn Hooks>]";
+    let smokeable: Vec<&str> = wired
+        .iter()
+        .filter(|h| {
+            catalog
+                .signature(h)
+                .is_some_and(|s| s.dispatch_args == vec![HOST_ARG, MODS_ARG])
+        })
+        .map(String::as_str)
+        .collect();
+    if smokeable.is_empty() {
+        return String::new();
+    }
+    let mut tests = String::new();
+    for name in &smokeable {
+        tests.push_str(&format!(
+            "    #[test]\n    fn {name}_dispatches() {{\n        let mods: Vec<Box<dyn horizon_client::mod_api::Hooks>> = vec![hooks()];\n        let mut host = SmokeHost;\n        horizon_client::mod_api::dispatch_{name}(&mut host, &mods);\n    }}\n\n"
+        ));
+    }
+    format!(
+        "/// Dispatch-level smoke: the pinned Horizon build's real `dispatch_*`\n/// machinery runs the emitted delegation end to end — nothing panics and\n/// every wired hook in the `(host, mods)` class is actually reachable\n/// through `hooks()`. The game's hook points call exactly these functions.\n#[cfg(test)]\nmod dispatch_smoke {{\n    use super::hooks;\n\n    struct SmokeHost;\n    impl horizon_client::mod_api::Host for SmokeHost {{}}\n\n{tests}}}\n"
+    )
 }
 
 /// One delegating trait method for `hook`, forwarding to every module that
@@ -1056,4 +1095,89 @@ fn hook_delegation(
     }
     out.push_str("    }\n");
     Some(out)
+}
+
+#[cfg(test)]
+mod dispatch_smoke_tests {
+    use super::*;
+
+    fn catalog() -> HookCatalog {
+        HookCatalog::load_or_snapshot(None).expect("repo hook catalog loads")
+    }
+
+    fn tick_module() -> (String, String) {
+        (
+            "chunkcourier_tick.rs".to_string(),
+            "use horizon_client::mod_api::*;\n\n#[derive(Default)]\npub struct ChunkcourierTick;\n\nimpl horizon_client::mod_api::Hooks for ChunkcourierTick {\n    fn player_tick(&self, _host: &mut dyn Host, _event: &mut PlayerTickEvent) {}\n}\n"
+                .to_string(),
+        )
+    }
+
+    #[test]
+    fn only_synthesizable_hooks_get_a_smoke_test() {
+        let catalog = catalog();
+        let smoke = dispatch_smoke_module(
+            &["player_tick".to_string(), "destroy_block".to_string()],
+            &catalog,
+        );
+        assert!(smoke.contains("#[cfg(test)]"));
+        assert!(smoke.contains("mod dispatch_smoke"));
+        assert!(smoke.contains("fn player_tick_dispatches()"));
+        assert!(smoke.contains("dispatch_player_tick(&mut host, &mods)"));
+        // destroy_block's real dispatch takes (pos, state, canceled) — not
+        // synthesizable from outside the game, so it must not appear.
+        assert!(!smoke.contains("destroy_block"), "{smoke}");
+    }
+
+    #[test]
+    fn no_smoke_module_without_synthesizable_hooks() {
+        let catalog = catalog();
+        assert!(dispatch_smoke_module(&["destroy_block".to_string()], &catalog).is_empty());
+        // Unknown names have no table entry, hence no dispatch shape: skip.
+        assert!(dispatch_smoke_module(&["not_a_hook".to_string()], &catalog).is_empty());
+        assert!(dispatch_smoke_module(&[], &catalog).is_empty());
+    }
+
+    #[test]
+    fn engine_lib_carries_the_smoke_for_wired_hooks() {
+        let catalog = catalog();
+        let hooks_used = vec![HookRef {
+            name: "player_tick".to_string(),
+            hook_version: 1,
+        }];
+        let modules = vec![tick_module()];
+        let (lib, warnings) = engine_lib_rs(&hooks_used, &catalog, &modules);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(lib.contains("impl horizon_client::mod_api::Hooks for PortedHooks"));
+        assert!(lib.contains("mod dispatch_smoke"));
+        assert!(lib.contains("fn player_tick_dispatches()"));
+        // The smoke lives only inside the cfg(test) module: nothing named
+        // SmokeHost may appear before the attribute (the crate the launcher
+        // compiles stops at `#[cfg(test)]`).
+        let test_start = lib.find("#[cfg(test)]").expect("cfg(test) marker present");
+        assert!(
+            !lib[..test_start].contains("SmokeHost"),
+            "smoke outside cfg(test)"
+        );
+    }
+
+    #[test]
+    fn unwired_hooks_produce_no_smoke_and_a_warning() {
+        let catalog = catalog();
+        let hooks_used = vec![HookRef {
+            name: "player_tick".to_string(),
+            hook_version: 1,
+        }];
+        // A module whose impl is missing cannot wire the hook: no smoke.
+        let modules = vec![(
+            "empty.rs".to_string(),
+            "#[derive(Default)]\npub struct Empty;\n".to_string(),
+        )];
+        let (lib, warnings) = engine_lib_rs(&hooks_used, &catalog, &modules);
+        assert!(
+            warnings.iter().any(|w| w.contains("player_tick")),
+            "{warnings:?}"
+        );
+        assert!(!lib.contains("mod dispatch_smoke"));
+    }
 }
