@@ -52,9 +52,13 @@ jobs:
       fail-fast: false
       matrix:
         seed: [mock, real]
-    # The `real` leg needs the NVIDIA secret; without it the leg would be
-    # dishonest noise, so it does not run at all (the mock leg always runs).
-    if: matrix.seed != 'real' || env.HAS_NVIDIA_KEY == 'true'
+    # The `real` leg needs the NVIDIA secret. GitHub's expression rules make
+    # the gate STEP-level, not job-level: `env` is not available in a
+    # job-level `if` (and `secrets` in no `if` at all — a workflow file that
+    # tries is rejected at parse time with zero jobs). Every leg-specific
+    # step and every shared pipeline step below carries the condition; a
+    # no-key run leaves the real leg visibly skipped (an explicit notice
+    # step), and the mock leg always runs.
     steps:
       - uses: actions/checkout@v4
 
@@ -150,7 +154,7 @@ jobs:
           echo "GATE_DIR=$GATE" >> "$GITHUB_ENV"
 
       - name: Port the fixture with the real NVIDIA NIM model (the production path)
-        if: matrix.seed == 'real'
+        if: matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true'
         timeout-minutes: 25
         working-directory: ${{ github.workspace }}
         env:
@@ -192,7 +196,15 @@ jobs:
           PY
           echo "GATE_DIR=$GATE" >> "$GITHUB_ENV"
 
+      - name: Notice the skipped real leg (no NVIDIA key)
+        if: matrix.seed == 'real' && env.HAS_NVIDIA_KEY != 'true'
+        run: |
+          echo "the real leg does not run: secrets.NVIDIA_API_KEY is not set."
+          echo "the boot pipeline below stays skipped for this leg (no port to"
+          echo "boot), which leaves the mock leg's evidence untouched."
+
       - name: Stage and build the game (launcher-style pipeline, keep the tree)
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         env:
           AUTO_PORTER_GATE_BUILD: "1"
           AUTO_PORTER_GATE_WORK: ${{ github.workspace }}/gate-work
@@ -217,18 +229,21 @@ jobs:
           test -x gate-target/fast/horizon-client
 
       - name: A JDK for the preparer's exporters (the pin wants Java 25)
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "25"
 
       - name: Fetch the pinned Minecraft files from Mojang's public endpoints
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         run: |
           LOCK="/tmp/auto-porter-horizon-source/${{ steps.pins.outputs.revision }}/research-lock.json"
           python3 scripts/fetch_mojang_inputs.py --lock "$LOCK" --out /tmp/mojang --jobs 12
           du -sh /tmp/mojang
 
       - name: Build horizon-prepare at the pin (its own target dir)
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         working-directory: ${{ github.workspace }}/gate-work
         run: |
           # Copy out of the cache: the preparer writes exporters' scratch into
@@ -239,6 +254,7 @@ jobs:
             --target-dir "$RUNNER_TEMP/horizon-prep-target"
 
       - name: Prepare the resources offline (no account, no launcher)
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         run: |
           PREP="$RUNNER_TEMP/horizon-prep-target/release/horizon-prepare"
           ROOT="$PWD/gate-work/horizon"
@@ -251,6 +267,7 @@ jobs:
           tail -5 prepare.stderr || true
 
       - name: Check the prepared resources (only the optional extras may lack)
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         run: |
           PREP="$RUNNER_TEMP/horizon-prep-target/release/horizon-prepare"
           ROOT="$PWD/gate-work/horizon"
@@ -269,12 +286,13 @@ jobs:
           done < check.txt
 
       - name: Extract the real port's in-game observables
-        if: matrix.seed == 'real'
+        if: matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true'
         run: |
           python3 scripts/in_game_markers.py "$GATE_DIR/out" \
             --markers markers.txt --json markers.json
 
       - name: Build horizon-ctl in the staged tree
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         working-directory: ${{ github.workspace }}/gate-work/stage
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/gate-target
@@ -282,6 +300,7 @@ jobs:
         run: cargo build --locked --profile fast --no-default-features -p horizon-client-lib --bin horizon-ctl
 
       - name: Boot the game headless (Xvfb, --offscreen, no session)
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libegl1 libgl1 libglx-mesa0 mesa-vulkan-drivers \
@@ -306,6 +325,7 @@ jobs:
           sleep 2
 
       - name: Assert the hook dispatched and the game kept simulating
+        if: matrix.seed == 'mock' || (matrix.seed == 'real' && env.HAS_NVIDIA_KEY == 'true')
         run: |
           LOG="$PWD/instance/logs/latest.log"
           test -f "$LOG" || { echo "the game wrote no log"; exit 1; }
